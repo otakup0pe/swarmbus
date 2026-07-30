@@ -211,6 +211,60 @@ def test_mcp_server_no_persistent_is_default():
     assert mock_run.call_args.kwargs["persistent"] is False
 
 
+def test_mcp_server_registry_options_thread_through():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            [
+                "mcp-server", "--agent-id", "sb",
+                "--state-dir", "/tmp/swarmbus",
+                "--registry-heartbeat-seconds", "30",
+                "--registry-stale-after-seconds", "90",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    kw = mock_run.call_args.kwargs
+    assert kw["state_dir"] == "/tmp/swarmbus"
+    assert kw["registry_heartbeat_seconds"] == 30
+    assert kw["registry_stale_after_seconds"] == 90
+
+
+def test_mcp_server_registry_options_pick_up_env():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            ["mcp-server", "--agent-id", "sb"],
+            env={
+                "SWARMBUS_STATE_DIR": "/tmp/from-env",
+                "SWARMBUS_REGISTRY_HEARTBEAT_SECONDS": "15",
+                "SWARMBUS_REGISTRY_STALE_AFTER_SECONDS": "45",
+            },
+        )
+    assert result.exit_code == 0, result.output
+    kw = mock_run.call_args.kwargs
+    assert kw["state_dir"] == "/tmp/from-env"
+    assert kw["registry_heartbeat_seconds"] == 15
+    assert kw["registry_stale_after_seconds"] == 45
+
+
+def test_mcp_server_rejects_stale_threshold_below_twice_heartbeat():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            [
+                "mcp-server", "--agent-id", "sb",
+                "--registry-heartbeat-seconds", "60",
+                "--registry-stale-after-seconds", "100",
+            ],
+        )
+    assert result.exit_code != 0
+    assert "at least twice" in result.output
+    mock_run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # start
 # ---------------------------------------------------------------------------

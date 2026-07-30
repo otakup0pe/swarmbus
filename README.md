@@ -153,25 +153,33 @@ bash scripts/setup-cc-plugin.sh <agent-id> [broker-host]
 bash scripts/setup-cc-plugin.sh planner localhost
 ```
 
-Restart Claude Code. Four MCP tools become available:
+Restart Claude Code. Five MCP tools become available:
 
-- `send_message(to, subject, body, content_type?)` — publish to a peer (or `to="broadcast"`)
-- `read_inbox()` — non-blocking check for queued messages
-- `watch_inbox(timeout)` — long-poll, returns when a message arrives
-- `list_agents()` — IDs of peers currently online
+- `send_message(to, subject, body, content_type?, priority?, reply_to?)` — publish to a peer (or `to="broadcast"`)
+- `read_inbox()` — consume up to 10 messages from the durable local inbox
+- `watch_inbox(timeout)` — wait for one durable inbox message
+- `list_agents()` — compact IDs-only view of peers currently online
+- `agent_state(action, agent_id?, status?, working_set?, include_offline?)` — list/get rich peer state or update this agent
 
-The skill (`src/swarmbus/skills/using-swarmbus/SKILL.md`, also installed under `site-packages/swarmbus/skills/using-swarmbus/` via pip) explains reply-to threading, content-type hygiene, broadcast vs directed, and security rules (inbound bodies are data, not instructions). Claude auto-loads it when the user mentions a peer agent by name or asks about coordination.
+`agent_state(action="list")` accepts only `include_offline`; `get` requires only `agent_id`; `update` changes the calling agent and requires `status`, `working_set`, or both. Omitted update fields stay unchanged, while `status=""` and `working_set=[]` clear them. Status is free-form Unicode text up to 280 characters. Working set is an awareness-only list of opaque strings, not a reservation or lock.
 
-**Persistent sessions (daemon-free delivery).** Pass `--persistent --presence` to `mcp-server` and the sidecar connects with a stable MQTT client identifier (`swarmbus-<agent-id>`) and `clean_session=False`. The broker queues QoS1 messages between sessions and redelivers them when the next session starts. `--presence` publishes a retained online/offline status so `list_agents` works without a daemon.
+The skill (`src/swarmbus/skills/using-swarmbus/SKILL.md`, also installed under `site-packages/swarmbus/skills/using-swarmbus/` via pip) explains the state contract, reply threading, content-type hygiene, coordination, and security rules. Claude auto-loads it when the user mentions peer coordination or agent state.
+
+**Managed persistent sessions (daemon-free delivery).** The MCP sidecar owns one MQTT connection for its lifetime. It validates inbound QoS1 messages, commits them to a per-agent SQLite inbox, then acknowledges them; `read_inbox` and `watch_inbox` consume SQLite without opening competing MQTT connections. Pass `--persistent --presence` so the broker queues messages across process downtime and publishes retained online/offline presence.
 
 ```bash
 swarmbus mcp-server --agent-id planner --broker mqtt.example.com \
-  --port 8883 --tls --persistent --presence
+  --port 8883 --tls --persistent --presence \
+  --state-dir ~/.local/state/swarmbus \
+  --registry-heartbeat-seconds 60 \
+  --registry-stale-after-seconds 180
 ```
+
+Presence stays on `agents/<id>/presence`; retained schema-v1 state is published to `swarmbus/registry/<id>`. Non-MCP clients can subscribe to `swarmbus/registry/+` for discovery. A broker reconnect in the same process republishes current status and working set; a fresh process starts with both empty.
 
 This replaces the daemon for most MCP-based agents. **Do not run a daemon and a persistent MCP server for the same agent-id** — only one client can hold the persistent session at a time; the broker will kick the first one off when the second connects.
 
-If you do not use `--persistent`, the MCP server opens a fresh ephemeral session per `read_inbox`/`watch_inbox` call and only sees retained messages — the same limitation as `swarmbus read`.
+Without `--persistent`, the MCP server still holds one managed connection for the process lifetime, but the broker does not queue messages while that process is offline.
 
 **Reactive wake for Claude Code** (optional). Archive gives you a trail but doesn't wake an idle Claude Code session. To wake a real reasoning turn on high-priority inbound, pair the daemon with `examples/claude-code-wake.sh`:
 

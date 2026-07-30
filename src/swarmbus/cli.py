@@ -863,6 +863,27 @@ def _detect_agent_id() -> str:
          "(offline). Makes this agent visible to `list_agents` without "
          "a listener daemon.",
 )
+@click.option(
+    "--state-dir",
+    default="~/.local/state/swarmbus",
+    envvar="SWARMBUS_STATE_DIR",
+    show_default=True,
+    help="Private durable inbox directory. [env: SWARMBUS_STATE_DIR]",
+)
+@click.option(
+    "--registry-heartbeat-seconds",
+    type=click.FloatRange(min=0, min_open=True),
+    default=60.0,
+    envvar="SWARMBUS_REGISTRY_HEARTBEAT_SECONDS",
+    show_default=True,
+)
+@click.option(
+    "--registry-stale-after-seconds",
+    type=click.FloatRange(min=0, min_open=True),
+    default=180.0,
+    envvar="SWARMBUS_REGISTRY_STALE_AFTER_SECONDS",
+    show_default=True,
+)
 @_broker_auth_options
 def mcp_server(
     agent_id: str,
@@ -870,6 +891,9 @@ def mcp_server(
     port: int,
     persistent: bool,
     presence: bool,
+    state_dir: str,
+    registry_heartbeat_seconds: float,
+    registry_stale_after_seconds: float,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -878,6 +902,12 @@ def mcp_server(
     tls: bool,
 ) -> None:
     """Start the MCP sidecar for this agent."""
+    if registry_stale_after_seconds < registry_heartbeat_seconds * 2:
+        raise click.BadParameter(
+            "must be at least twice --registry-heartbeat-seconds",
+            param_hint="--registry-stale-after-seconds",
+        )
+
     from .mcp_server import run_mcp_server
     run_mcp_server(
         agent_id=agent_id,
@@ -885,6 +915,9 @@ def mcp_server(
         port=port,
         persistent=persistent,
         presence=presence,
+        state_dir=state_dir,
+        registry_heartbeat_seconds=registry_heartbeat_seconds,
+        registry_stale_after_seconds=registry_stale_after_seconds,
         username=username,
         password=password,
         tls=tls,
