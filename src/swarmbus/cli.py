@@ -358,35 +358,58 @@ def watch(agent_id: str, broker: str, port: int, timeout: float, as_json: bool,
 @main.command("list")
 @click.option("--broker", default="localhost", show_default=True)
 @click.option("--port", default=1883, show_default=True)
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON array")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON")
+@click.option("--all", "include_offline", is_flag=True,
+              help="Include registered agents that are offline or stale. "
+                   "Scheduled agents are offline by design between runs.")
 @_broker_auth_options
 def list_agents_cmd(broker: str, port: int, as_json: bool,
+                    include_offline: bool,
                     username: str | None, password: str | None, tls: bool,
                     ca_cert: str | None, client_cert: str | None,
                     client_key: str | None) -> None:
-    """List agent IDs currently online on the broker.
+    """List agents on the broker.
+
+    Default shows only agents online right now. Use --all to include
+    registered-but-offline agents, with status and offline reason.
 
     \b
     swarmbus list
-    swarmbus list --json
+    swarmbus list --all
+    swarmbus list --all --json
     """
     bus = AgentBus.probe(broker=broker, port=port,
                          username=username, password=password, tls=tls,
                          ca_cert=ca_cert, client_cert=client_cert,
                          client_key=client_key)
     try:
-        agents = asyncio.run(bus.list_agents())
+        states = asyncio.run(bus.list_states(include_offline=include_offline))
     except aiomqtt.MqttError as exc:
         click.echo(f"[swarmbus] broker unreachable ({broker}:{port}): {exc}", err=True)
         sys.exit(2)
     if as_json:
-        click.echo(json.dumps(agents))
+        click.echo(json.dumps(states))
         return
-    if not agents:
-        click.echo("[swarmbus] no agents online")
+    if not states:
+        # Say which view produced the empty result. "no agents online" over an
+        # online-only view was read as "no such agent exists" more than once;
+        # naming the scope is what stops that.
+        scope = "registered" if include_offline else "online"
+        hint = "" if include_offline else " (try --all)"
+        click.echo(f"[swarmbus] no agents {scope}{hint}")
         return
-    for a in agents:
-        click.echo(a)
+    for s in states:
+        agent_id = s.get("agent_id", "?")
+        if s.get("online"):
+            marker = "online "
+        else:
+            reason = s.get("offline_reason") or "offline"
+            marker = f"{reason} "
+        status = s.get("status") or ""
+        line = f"{agent_id}  [{marker.strip()}]"
+        if status:
+            line = f"{line}  {status}"
+        click.echo(line)
 
 
 @main.command()

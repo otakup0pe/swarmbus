@@ -485,6 +485,64 @@ class AgentBus:
                 pass
         return sorted(online)
 
+    async def list_states(
+        self,
+        *,
+        include_offline: bool = False,
+        collect_window: float = 0.5,
+        stale_after_seconds: float = 180,
+    ) -> list[dict]:
+        """Return rich registry state for peers, optionally including offline.
+
+        `list_agents` above answers only "who is online right now" and cannot
+        represent a peer that is registered but between runs. That distinction
+        is load-bearing for scheduled agents, which are offline by design most
+        of the time -- reading their absence from an online-only view as "never
+        registered" is a mistake this project has now seen made twice.
+
+        Collects BOTH retained topics so online-ness is decided the same way
+        the managed runtime decides it (registry heartbeat freshness AND
+        presence), by feeding the shared `RegistryCache` rather than
+        reimplementing the rules here.
+
+        Raises `aiomqtt.MqttError` on broker failure; callers wanting a
+        graceful empty list must catch it.
+        """
+        from .registry import RegistryCache
+
+        cache = RegistryCache(stale_after_seconds=stale_after_seconds)
+        async with aiomqtt.Client(self.broker, port=self.port, **self._aiomqtt_kwargs()) as client:
+            await client.subscribe("swarmbus/registry/+", qos=1)
+            await client.subscribe("agents/+/presence", qos=0)
+            try:
+                async with asyncio_timeout(collect_window):
+                    async for mqtt_msg in client.messages:
+                        topic = str(mqtt_msg.topic)
+                        try:
+                            if topic.startswith("swarmbus/registry/"):
+                                cache.update_registry(topic, mqtt_msg.payload)
+                            elif topic.endswith("/presence"):
+                                cache.update_presence(topic, mqtt_msg.payload)
+                        except (TypeError, ValueError, UnicodeDecodeError) as exc:
+                            # Same exception set the managed runtime catches
+                            # for these exact calls (runtime._handle_message).
+                            # Deliberately NOT a bare `except Exception`: this
+                            # method exists to stop an empty result being read
+                            # as absence, so swallowing an unexpected error
+                            # here would produce a short list that still looks
+                            # authoritative. Anything outside this set is a
+                            # real bug and should propagate.
+                            #
+                            # Covers json.JSONDecodeError (a ValueError),
+                            # pydantic ValidationError, and the explicit
+                            # agent_id/topic mismatch raise in from_mqtt.
+                            logger.warning(
+                                "list_states: discarding %s: %s", topic, exc
+                            )
+            except asyncio.TimeoutError:
+                pass
+        return cache.list_states(include_offline=include_offline)
+
     async def disconnect(self) -> None:
         """Publish offline presence (retained). Call before process exit if
         not using listen()."""

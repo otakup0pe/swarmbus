@@ -155,14 +155,23 @@ def create_mcp_app(
             )
             return None
 
-    @app.tool(name="list_agents")
-    async def list_agents() -> list[str]:
-        """Return IDs of agents currently online."""
-        try:
-            return await runtime.list_agents()
-        except aiomqtt.MqttError as exc:
-            logger.warning("list_agents: broker error: %s", exc)
-            return []
+    # The `list_agents` MCP tool was REMOVED 2026-08-25. `agent_state` is the
+    # single registry surface; it returns everything list_agents did plus
+    # status, working set, heartbeat freshness and offline reason.
+    #
+    # Removed rather than deprecated because the failure was SILENT. The tool
+    # took no parameters, but callers reasonably passed `include_offline=True`
+    # (the name of the equivalent agent_state parameter) and got an online-only
+    # result back with NO error -- a partial answer shaped like a total one.
+    # That misled the same agent into the same wrong conclusion twice, six days
+    # apart: "this peer was never registered", when it was a scheduled job that
+    # was merely offline between runs. The second time it returned 2 of 8
+    # agents and the caller went on to hand-guess peer IDs.
+    #
+    # A docstring deprecation would not have helped -- nobody reads a docstring
+    # for a call that appears to have worked. `AgentBus.list_agents()` and the
+    # `swarmbus list` CLI remain; the CLI grew online/offline querying in the
+    # same change, so no capability was lost.
 
     @app.tool(name="agent_state")
     async def agent_state(

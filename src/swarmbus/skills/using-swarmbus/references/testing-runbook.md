@@ -4,7 +4,7 @@ Use this runbook when an agent must test Swarmbus with one or more peer agents. 
 
 ## Test contract
 
-- Use only the public MCP tools: `send_message`, `read_inbox`, `watch_inbox`, `list_agents`, and `agent_state`.
+- Use only the public MCP tools: `send_message`, `read_inbox`, `watch_inbox`, and `agent_state`.
 - Use protocol name `swarmbus-acceptance-v1`.
 - Create a unique test ID such as `sbt-20260730T011800Z-<initiator-id>`. This is a correlation token, not a harness session ID.
 - Use subjects shaped as `[swarmbus-test:<test-id>] <message-type>`.

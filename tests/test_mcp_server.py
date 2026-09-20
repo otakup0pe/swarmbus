@@ -54,41 +54,24 @@ async def test_send_message_tool_calls_bus():
         )
 
 
+# The `list_agents` MCP tool was removed 2026-08-25; `agent_state` is the
+# single registry surface. Its bus-level behaviour (online filtering,
+# latest-status-wins, malformed-payload skipping) still backs `swarmbus list`
+# and is covered directly in tests/test_bus_methods.py.
+
+
 @pytest.mark.asyncio
-async def test_list_agents_returns_list():
+async def test_list_agents_tool_is_gone():
+    """Regression guard: the tool must not come back by accident.
+
+    It was removed because it accepted `include_offline` and SILENTLY ignored
+    it, returning an online-only subset with no error -- which misled callers
+    into "this agent was never registered" twice, six days apart.
+    """
     with patch("swarmbus.bus.aiomqtt.Client", return_value=_FakePresenceClient([])):
         app = create_mcp_app(agent_id="sparrow", broker="localhost")
-        list_fn = app._tool_fns["list_agents"]
-        result = await list_fn()
-        assert isinstance(result, list)
-        assert result == []
-
-
-@pytest.mark.asyncio
-async def test_list_agents_reports_online_only():
-    retained = [
-        {"agent": "sparrow", "status": "online"},
-        {"agent": "wren", "status": "online"},
-        {"agent": "ghost", "status": "offline"},  # should be filtered
-    ]
-    with patch("swarmbus.bus.aiomqtt.Client", return_value=_FakePresenceClient(retained)):
-        app = create_mcp_app(agent_id="sparrow", broker="localhost")
-        result = await app._tool_fns["list_agents"]()
-    assert set(result) == {"sparrow", "wren"}
-    assert result == sorted(result)  # sorted output
-
-
-@pytest.mark.asyncio
-async def test_list_agents_latest_status_wins():
-    """If an agent has multiple retained presence messages, latest wins."""
-    retained = [
-        {"agent": "wren", "status": "online"},
-        {"agent": "wren", "status": "offline"},  # supersedes
-    ]
-    with patch("swarmbus.bus.aiomqtt.Client", return_value=_FakePresenceClient(retained)):
-        app = create_mcp_app(agent_id="sparrow", broker="localhost")
-        result = await app._tool_fns["list_agents"]()
-    assert result == []
+    assert "list_agents" not in app._tool_fns
+    assert "agent_state" in app._tool_fns
 
 
 @pytest.mark.asyncio
@@ -108,27 +91,6 @@ async def test_read_inbox_logs_broker_error(caplog):
             result = await app._tool_fns["read_inbox"]()
     assert result == []
     assert any("broker error" in r.message for r in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_list_agents_skips_malformed_payloads():
-    class _BadPayloadMsg:
-        payload = b"not json at all"
-    class _MixedClient:
-        async def __aenter__(self): return self
-        async def __aexit__(self, *_): pass
-        async def subscribe(self, *args, **kwargs): pass
-        @property
-        def messages(self):
-            async def _gen():
-                yield _BadPayloadMsg()
-                yield _FakePresenceMsg({"agent": "sparrow", "status": "online"})
-            return _gen()
-
-    with patch("swarmbus.bus.aiomqtt.Client", return_value=_MixedClient()):
-        app = create_mcp_app(agent_id="sparrow", broker="localhost")
-        result = await app._tool_fns["list_agents"]()
-    assert result == ["sparrow"]
 
 
 @pytest.mark.asyncio
@@ -172,7 +134,6 @@ async def test_mcp_tools_use_injected_runtime():
     )
     await app._tool_fns["read_inbox"]()
     await app._tool_fns["watch_inbox"](timeout=4)
-    assert await app._tool_fns["list_agents"]() == ["loom"]
 
     runtime.send_message.assert_awaited_once_with(
         to="wren",
@@ -184,7 +145,6 @@ async def test_mcp_tools_use_injected_runtime():
     )
     runtime.read_inbox.assert_awaited_once_with()
     runtime.watch_inbox.assert_awaited_once_with(timeout=4)
-    runtime.list_agents.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

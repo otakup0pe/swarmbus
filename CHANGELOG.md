@@ -16,6 +16,39 @@ If **any** of the above is "yes", the bullet spells out the mitigation a running
 
 ---
 
+## [Unreleased]
+
+### Removed
+- **BREAKING — the `list_agents` MCP tool.** `agent_state` is now the single MCP registry surface.
+
+  **Why it was removed rather than deprecated.** The tool took no parameters, but callers reasonably passed `include_offline=True` — the name of the equivalent `agent_state` parameter — and the call **succeeded**, silently ignoring the argument and returning an online-only subset. No error, no warning, a well-formed list. A partial answer shaped like a total one, with nothing to tell the caller the scope had been narrowed.
+
+  That is not a documentation problem. **Nobody reads a docstring for a call that appears to have worked**, so a deprecation note would have left the failure fully live. The parameter was accepted at the wire level; only removing the tool closes it.
+
+  **Observed cost.** It produced the same wrong conclusion twice, six days apart, from the same seat: *"this agent was never registered"* about peers that were scheduled jobs merely offline between runs. The second time it returned 2 of 8 agents and the caller went on to hand-guess agent IDs from the truncated list. Scheduled agents are offline by design most of their life, so an online-only view is exactly the wrong default for the question "does this peer exist?"
+
+### Added
+- `AgentBus.list_states(include_offline=False, collect_window=0.5, stale_after_seconds=180)` — rich registry state without the managed MCP runtime. Subscribes to **both** `swarmbus/registry/+` and `agents/+/presence` and feeds the shared `RegistryCache`, so online-ness is decided by the same rules the runtime uses rather than a second implementation. Unions registry and presence, so presence-only agents (legacy daemons that never publish a registry record) are still listed.
+- `swarmbus list --all` — include registered-but-offline agents, with `offline_reason` and status. `--json` now emits full state records.
+
+### Changed
+- `swarmbus list` empty output names its own scope: `no agents online (try --all)` vs `no agents registered`. A bare "no agents" over an online-only view is the phrasing that got misread as absence.
+
+**Wire-compat:** ⚠️ **MCP tool contract CHANGED.** `list_agents` is gone; `agent_state` is unchanged and already carried the same data.
+
+- **Envelope shape:** unchanged.
+- **Topic layout:** unchanged.
+- **Retain/QoS defaults:** unchanged.
+- **MCP tool contract:** `list_agents` REMOVED. Any MCP client calling it gets tool-not-found. This is a **loud** failure by design — the whole defect being fixed was a silent one.
+
+**Migration:** `list_agents()` → `agent_state(action="list")`. To include offline peers — which is what most callers of `list_agents` actually wanted — `agent_state(action="list", include_offline=true)`.
+
+**Restart order for a running fleet:** the isolated runtime installs `--no-editable`, so a checkout change does not reach a live sidecar until the runtime is rebuilt. Rebuild the runtime first, then restart sidecars; a sidecar restarted against an un-rebuilt runtime keeps the old tool and nothing appears to change.
+
+**Not affected:** `AgentBus.list_agents()` and the `swarmbus list` CLI both remain. Only the MCP tool was removed.
+
+---
+
 ## [0.1.4] — 2026-04-27
 
 ### Added

@@ -158,7 +158,14 @@ Restart Claude Code. Five MCP tools become available:
 - `send_message(to, subject, body, content_type?, priority?, reply_to?)` — publish to a peer (or `to="broadcast"`)
 - `read_inbox()` — consume up to 10 messages from the durable local inbox
 - `watch_inbox(timeout)` — wait for one durable inbox message
-- `list_agents()` — compact IDs-only view of peers currently online
+- `agent_state(action="list", include_offline=false)` — peer registry state.
+  Pass `include_offline=true` to include agents that are registered but
+  offline; scheduled agents are offline by design between runs, so their
+  absence from the default view is not evidence they do not exist.
+
+  The `list_agents` MCP tool was removed 2026-08-25. It silently accepted
+  `include_offline` and ignored it, returning an online-only subset with no
+  error. `AgentBus.list_agents()` and `swarmbus list` are unaffected.
 - `agent_state(action, agent_id?, status?, working_set?, include_offline?)` — list/get rich peer state or update this agent
 
 `agent_state(action="list")` accepts only `include_offline`; `get` requires only `agent_id`; `update` changes the calling agent and requires `status`, `working_set`, or both. Omitted update fields stay unchanged, while `status=""` and `working_set=[]` clear them. Status is free-form Unicode text up to 280 characters. Working set is an awareness-only list of opaque strings, not a reservation or lock.

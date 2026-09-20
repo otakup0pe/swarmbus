@@ -158,6 +158,37 @@ async def test_send_message_preserves_envelope_metadata():
 
 
 @pytest.mark.asyncio
+async def test_heartbeat_loop_survives_publish_failure():
+    runtime = _runtime(_FakeStore([]))
+    runtime._client = _FakeClient()
+    runtime.heartbeat_seconds = 0.001
+
+    calls = 0
+    recovered = asyncio.Event()
+
+    async def _flaky_publish():
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            raise RuntimeError("swarmbus MQTT runtime is not connected")
+        recovered.set()
+
+    runtime._publish_registry = _flaky_publish
+    task = asyncio.create_task(runtime._heartbeat_loop())
+    try:
+        # The first two publishes raise; a resilient loop keeps going and
+        # eventually lands a successful publish instead of dying silently.
+        await asyncio.wait_for(recovered.wait(), timeout=1)
+        assert not task.done()
+        assert calls >= 3
+    finally:
+        runtime._stopping.set()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
 async def test_update_state_preserves_omitted_fields_and_clears_explicit_values():
     runtime = _runtime(_FakeStore([]))
     runtime._client = _FakeClient()

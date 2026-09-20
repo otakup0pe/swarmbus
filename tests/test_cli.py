@@ -359,21 +359,73 @@ def test_list_empty():
     runner = CliRunner()
     with patch("swarmbus.cli.AgentBus.probe") as MockProbe:
         instance = MockProbe.return_value
-        instance.list_agents = AsyncMock(return_value=[])
+        instance.list_states = AsyncMock(return_value=[])
         result = runner.invoke(main, ["list"])
     assert result.exit_code == 0, result.output
+    # Empty must NAME its scope and point at the wider view. A bare
+    # "no agents" over an online-only query was read as "no such agent
+    # exists" more than once.
     assert "no agents online" in result.output
+    assert "--all" in result.output
+
+
+def test_list_empty_all_does_not_suggest_all():
+    """With --all already given there is no wider view to suggest."""
+    runner = CliRunner()
+    with patch("swarmbus.cli.AgentBus.probe") as MockProbe:
+        instance = MockProbe.return_value
+        instance.list_states = AsyncMock(return_value=[])
+        result = runner.invoke(main, ["list", "--all"])
+    assert result.exit_code == 0, result.output
+    assert "no agents registered" in result.output
+    assert "--all" not in result.output
 
 
 def test_list_prints_agents():
     runner = CliRunner()
     with patch("swarmbus.cli.AgentBus.probe") as MockProbe:
         instance = MockProbe.return_value
-        instance.list_agents = AsyncMock(return_value=["sparrow", "wren"])
+        instance.list_states = AsyncMock(return_value=[
+            {"agent_id": "sparrow", "online": True, "status": "building"},
+            {"agent_id": "wren", "online": True, "status": ""},
+        ])
         result = runner.invoke(main, ["list"])
     assert result.exit_code == 0, result.output
     assert "sparrow" in result.output
     assert "wren" in result.output
+    assert "building" in result.output
+
+
+def test_list_all_shows_offline_reason():
+    """--all must distinguish a clean exit from a broken one.
+
+    A scheduled agent between runs (clean-shutdown) and one that dropped
+    (connection-lost) look identical in an online-only view; that
+    distinction is the whole reason --all exists.
+    """
+    runner = CliRunner()
+    with patch("swarmbus.cli.AgentBus.probe") as MockProbe:
+        instance = MockProbe.return_value
+        instance.list_states = AsyncMock(return_value=[
+            {"agent_id": "healthcheck", "online": False,
+             "offline_reason": "clean-shutdown", "status": ""},
+            {"agent_id": "ghost", "online": False,
+             "offline_reason": "connection-lost", "status": ""},
+        ])
+        result = runner.invoke(main, ["list", "--all"])
+    assert result.exit_code == 0, result.output
+    assert "clean-shutdown" in result.output
+    assert "connection-lost" in result.output
+    instance.list_states.assert_awaited_once_with(include_offline=True)
+
+
+def test_list_default_does_not_include_offline():
+    runner = CliRunner()
+    with patch("swarmbus.cli.AgentBus.probe") as MockProbe:
+        instance = MockProbe.return_value
+        instance.list_states = AsyncMock(return_value=[])
+        runner.invoke(main, ["list"])
+    instance.list_states.assert_awaited_once_with(include_offline=False)
 
 
 def test_tail_reads_full_file_on_first_call(tmp_path):
@@ -625,7 +677,7 @@ def test_list_broker_unreachable_exits_2():
     runner = CliRunner()
     with patch("swarmbus.cli.AgentBus.probe") as MockProbe:
         instance = MockProbe.return_value
-        instance.list_agents = AsyncMock(side_effect=aiomqtt.MqttError("Connection refused"))
+        instance.list_states = AsyncMock(side_effect=aiomqtt.MqttError("Connection refused"))
         result = runner.invoke(main, ["list"])
     assert result.exit_code == 2
     assert "broker unreachable" in result.output
@@ -664,11 +716,21 @@ def test_start_invoke_uses_shlex_split():
 
 
 def test_list_json():
+    """--json now emits the full state records, not bare ID strings.
+
+    Deliberate shape change: the point of consolidating on registry state is
+    that consumers can see online-ness and offline reason, which a list of
+    strings cannot carry.
+    """
+    states = [
+        {"agent_id": "sparrow", "online": True, "status": "building"},
+        {"agent_id": "wren", "online": False, "offline_reason": "clean-shutdown"},
+    ]
     runner = CliRunner()
     with patch("swarmbus.cli.AgentBus.probe") as MockProbe:
         instance = MockProbe.return_value
-        instance.list_agents = AsyncMock(return_value=["sparrow", "wren"])
-        result = runner.invoke(main, ["list", "--json"])
+        instance.list_states = AsyncMock(return_value=states)
+        result = runner.invoke(main, ["list", "--json", "--all"])
     assert result.exit_code == 0, result.output
     import json as _json
-    assert _json.loads(result.output) == ["sparrow", "wren"]
+    assert _json.loads(result.output) == states

@@ -268,8 +268,16 @@ async def test_retained_presence_late_subscriber(mosquitto_broker):
 
 
 @pytest.mark.asyncio
-async def test_list_agents_mcp_tool_sees_online_agents(mosquitto_broker):
-    """End-to-end: two agents listening → list_agents MCP tool returns both."""
+async def test_list_states_sees_presence_only_agents(mosquitto_broker):
+    """End-to-end: two listeners -> AgentBus.list_states() returns both.
+
+    Replaces the removed list_agents MCP tool test, and covers more: these
+    agents publish PRESENCE but never a `swarmbus/registry/<id>` record, so
+    this asserts that list_states unions registry and presence rather than
+    keying only on the registry. If it keyed on the registry alone, `swarmbus
+    list` would silently stop showing every legacy/daemon agent -- an empty
+    result that reads as "nobody is there".
+    """
     host, port = mosquitto_broker
 
     a = AgentBus(agent_id="one", broker=host, port=port, retain=False)
@@ -279,10 +287,11 @@ async def test_list_agents_mcp_tool_sees_online_agents(mosquitto_broker):
     await asyncio.sleep(0.4)  # let both retained online publishes settle
 
     try:
-        app = create_mcp_app(agent_id="observer", broker=host, port=port)
-        result = await app._tool_fns["list_agents"]()
-        assert "one" in result
-        assert "two" in result
+        observer = AgentBus.probe(broker=host, port=port)
+        states = await observer.list_states(collect_window=0.5)
+        ids = {s["agent_id"] for s in states}
+        assert "one" in ids
+        assert "two" in ids
     finally:
         await _stop(t_a)
         await _stop(t_b)
@@ -522,7 +531,11 @@ async def test_mcp_tools_expose_expected_signatures():
     if a tool name or parameter name changes. Assert the full tool shape."""
     app = create_mcp_app(agent_id="sig-check", broker="localhost", port=1883)
 
-    expected = {"send_message", "read_inbox", "watch_inbox", "list_agents", "agent_state"}
+    # `list_agents` REMOVED 2026-08-25 -- deliberately a contract break.
+    # It accepted `include_offline` and silently ignored it, returning an
+    # online-only subset with no error. `agent_state(action="list",
+    # include_offline=...)` is the single registry surface.
+    expected = {"send_message", "read_inbox", "watch_inbox", "agent_state"}
     assert set(app._tool_fns.keys()) == expected
 
     import inspect
@@ -537,8 +550,13 @@ async def test_mcp_tools_expose_expected_signatures():
     assert "timeout" in watch_sig.parameters
     assert watch_sig.parameters["timeout"].default == 30.0
 
-    list_sig = inspect.signature(app._tool_fns["list_agents"])
-    assert len(list_sig.parameters) == 0
+    state_sig = inspect.signature(app._tool_fns["agent_state"])
+    # `include_offline` must be a REAL parameter here. The removed
+    # list_agents accepted it in practice and ignored it; the whole point of
+    # consolidating on agent_state is that this one honours it.
+    assert set(state_sig.parameters.keys()) >= {
+        "action", "agent_id", "status", "working_set", "include_offline",
+    }
 
 
 @pytest.mark.asyncio

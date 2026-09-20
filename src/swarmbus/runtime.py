@@ -214,7 +214,10 @@ class ManagedMCPRuntime:
         while not self._stopping.is_set():
             await asyncio.sleep(self.heartbeat_seconds)
             if self._client is not None and self.presence:
-                await self._publish_registry()
+                try:
+                    await self._publish_registry()
+                except Exception as exc:
+                    logger.warning("heartbeat registry publish failed: %s", exc)
 
     async def _handle_message(
         self,

@@ -135,7 +135,7 @@ def test_list_passes_auth_through():
     runner = CliRunner()
     with patch("swarmbus.cli.AgentBus") as MockBusClass:
         # list_agents_cmd uses AgentBus.probe — patch that too.
-        MockBusClass.probe.return_value.list_agents = AsyncMock(return_value=[])
+        MockBusClass.probe.return_value.list_states = AsyncMock(return_value=[])
         result = runner.invoke(
             main,
             ["list"],
