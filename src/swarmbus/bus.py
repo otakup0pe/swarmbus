@@ -11,6 +11,7 @@ import aiomqtt
 
 from .message import AgentMessage, _validate_registered_agent_id
 from .handlers.base import BaseHandler
+from .topics import DEFAULT_TOPICS, TopicMap
 from ._compat import asyncio_timeout
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,13 @@ def _append_outbox_entry(path: str, msg: AgentMessage) -> None:
 
 
 class AgentBus:
+    # MQTT topic layout. Declared at class level on purpose: `probe()`
+    # builds an instance via cls.__new__ and never runs __init__, so an
+    # instance-only attribute would leave probe buses unable to build a
+    # topic. Root-less by default, which keeps the wire format unchanged;
+    # a rooted deployment overrides this with TopicMap(root=...).
+    topics: TopicMap = DEFAULT_TOPICS
+
     def __init__(
         self,
         agent_id: str,
@@ -86,6 +94,7 @@ class AgentBus:
         ca_cert: str | None = None,
         client_cert: str | None = None,
         client_key: str | None = None,
+        topic_root: str = "",
     ) -> None:
         """Construct an AgentBus.
 
@@ -121,6 +130,13 @@ class AgentBus:
         TLS engages when ``tls=True`` or any of ``ca_cert`` / ``client_cert``
         / ``client_key`` is set; otherwise the broker connection is
         plaintext.
+
+        topic_root: namespace prefix for the agent and registry trees, e.g.
+            ``"loom"`` yields ``loom/agents/<id>/inbox``. Defaults to ``""``,
+            which reproduces the historical unrooted layout byte-for-byte --
+            so an existing deployment that does not set it sees no wire
+            change at all. Broadcast is deliberately NOT rooted; see
+            ``topics.TopicMap``.
         """
         _validate_registered_agent_id(agent_id)
         self.agent_id = agent_id
@@ -134,6 +150,13 @@ class AgentBus:
         self.ca_cert = ca_cert
         self.client_cert = client_cert
         self.client_key = client_key
+        # Instance attribute deliberately SHADOWS the class-level default
+        # declared above. ⛔ Do not delete the class attribute in favour of
+        # this one: probe() builds a bus via cls.__new__ and never runs
+        # __init__, so the class attribute is the only topic map a probe
+        # instance has. An unrooted topic_root yields a TopicMap equal to
+        # DEFAULT_TOPICS, so the default path stays byte-identical.
+        self.topics = TopicMap(root=topic_root)
         # Eagerly build the TLS context so misconfigurations (e.g. unreadable
         # cert files, mismatched client_cert/key) fail at construction time
         # rather than on the first network call.
@@ -179,6 +202,7 @@ class AgentBus:
         ca_cert: str | None = None,
         client_cert: str | None = None,
         client_key: str | None = None,
+        topic_root: str = "",
     ) -> "AgentBus":
         """Construct a broker-only instance for operations that don't need a
         registered agent identity (e.g. `list_agents`).
@@ -189,9 +213,18 @@ class AgentBus:
 
         Auth + TLS kwargs mirror ``__init__``: a probe bus must connect with
         the same credentials as a regular bus on a hardened broker.
+
+        ``topic_root`` must be passed EXPLICITLY here and cannot be
+        inherited. This method deliberately bypasses ``__init__`` via
+        ``cls.__new__``, so the class-level ``topics`` default is all a
+        probe would otherwise get -- and on a rooted deployment that
+        unrooted default makes `list_agents` return nothing at all, with
+        no error, because the `agents/+/presence` subscription would be
+        watching a namespace no one publishes to.
         """
         self = cls.__new__(cls)
         self.agent_id = "_probe"
+        self.topics = TopicMap(root=topic_root)
         self.broker = broker
         self.port = port
         self.retain = False
@@ -296,7 +329,7 @@ class AgentBus:
             reply_to=reply_to,
         )
         # Broadcast uses agents/broadcast; directed messages use agents/{to}/inbox
-        topic = "agents/broadcast" if to == "broadcast" else f"agents/{to}/inbox"
+        topic = self.topics.route(to)
         payload = msg.to_json()
         if self._client is not None:
             await self._client.publish(topic, payload, qos=1, retain=self.retain)
@@ -329,7 +362,7 @@ class AgentBus:
         "online" is overwritten when an agent crashes unexpectedly.
         """
         will = aiomqtt.Will(
-            topic=f"agents/{self.agent_id}/presence",
+            topic=self.topics.presence(self.agent_id),
             payload=json.dumps({"agent": self.agent_id, "status": "offline"}),
             qos=1,
             retain=True,
@@ -348,13 +381,15 @@ class AgentBus:
                     self.broker, port=self.port, **client_kwargs
                 ) as client:
                     await client.publish(
-                        f"agents/{self.agent_id}/presence",
+                        self.topics.presence(self.agent_id),
                         json.dumps({"agent": self.agent_id, "status": "online"}),
                         qos=1,
                         retain=True,
                     )
-                    await client.subscribe(f"agents/{self.agent_id}/inbox", qos=1)
-                    await client.subscribe("agents/broadcast", qos=1)
+                    await client.subscribe(
+                        self.topics.inbox(self.agent_id), qos=1
+                    )
+                    await client.subscribe(self.topics.broadcast, qos=1)
                     backoff = reconnect_initial  # reset after successful (re)connect
 
                     async for mqtt_msg in client.messages:
@@ -410,7 +445,7 @@ class AgentBus:
         async with aiomqtt.Client(
             self.broker, port=self.port, **client_kwargs
         ) as client:
-            await client.subscribe(f"agents/{self.agent_id}/inbox", qos=1)
+            await client.subscribe(self.topics.inbox(self.agent_id), qos=1)
             try:
                 async with asyncio_timeout(drain_timeout):
                     async for mqtt_msg in client.messages:
@@ -449,7 +484,7 @@ class AgentBus:
         async with aiomqtt.Client(
             self.broker, port=self.port, **client_kwargs
         ) as client:
-            await client.subscribe(f"agents/{self.agent_id}/inbox", qos=1)
+            await client.subscribe(self.topics.inbox(self.agent_id), qos=1)
             try:
                 async with asyncio_timeout(timeout):
                     async for mqtt_msg in client.messages:
@@ -473,7 +508,7 @@ class AgentBus:
         async with aiomqtt.Client(
             self.broker, port=self.port, **self._aiomqtt_kwargs()
         ) as client:
-            await client.subscribe("agents/+/presence", qos=0)
+            await client.subscribe(self.topics.any_presence_filter(), qos=0)
             try:
                 async with asyncio_timeout(collect_window):
                     async for mqtt_msg in client.messages:
@@ -500,7 +535,7 @@ class AgentBus:
             self.broker, port=self.port, **self._aiomqtt_kwargs()
         ) as client:
             await client.publish(
-                f"agents/{self.agent_id}/presence",
+                self.topics.presence(self.agent_id),
                 json.dumps({"agent": self.agent_id, "status": "offline"}),
                 qos=1,
                 retain=True,

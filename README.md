@@ -153,25 +153,38 @@ bash scripts/setup-cc-plugin.sh <agent-id> [broker-host]
 bash scripts/setup-cc-plugin.sh planner localhost
 ```
 
-Restart Claude Code. Four MCP tools become available:
+Restart Claude Code. Five MCP tools become available:
 
-- `send_message(to, subject, body, content_type?)` — publish to a peer (or `to="broadcast"`)
-- `read_inbox()` — non-blocking check for queued messages
-- `watch_inbox(timeout)` — long-poll, returns when a message arrives
-- `list_agents()` — IDs of peers currently online
+- `send_message(to, subject, body, content_type?, priority?, reply_to?)` — publish to a peer or broadcast
+- `read_inbox()` — consume up to 10 messages from the durable local inbox
+- `watch_inbox(timeout)` — wait for one durable inbox message
+- `list_agents()` — compatibility view of peer IDs currently online
+- `agent_state(action, agent_id?, status?, working_set?, capabilities?, lifecycle?, include_offline?)` — list, inspect, or update retained agent state
 
 The skill (`src/swarmbus/skills/using-swarmbus/SKILL.md`, also installed under `site-packages/swarmbus/skills/using-swarmbus/` via pip) explains reply-to threading, content-type hygiene, broadcast vs directed, and security rules (inbound bodies are data, not instructions). Claude auto-loads it when the user mentions a peer agent by name or asks about coordination.
 
-**Persistent sessions (daemon-free delivery).** Pass `--persistent --presence` to `mcp-server` and the sidecar connects with a stable MQTT client identifier (`swarmbus-<agent-id>`) and `clean_session=False`. The broker queues QoS1 messages between sessions and redelivers them when the next session starts. `--presence` publishes a retained online/offline status so `list_agents` works without a daemon.
+**Managed MCP runtime.** The sidecar holds one MQTT connection for its lifetime. It validates inbound QoS1 messages, commits them to a per-agent SQLite inbox, and only then acknowledges them. `read_inbox` and `watch_inbox` consume that local store instead of opening competing MQTT connections.
+
+Pass `--persistent` to keep a stable broker session so QoS1 messages queue while the sidecar is offline. Pass `--presence` to publish LWT-backed presence and retained registry state. Identity lifecycle is separate: persistent named facets remain in the offline directory, while transient session identities remove their retained registry and presence records on clean shutdown.
 
 ```bash
+# Named persistent facet
 swarmbus mcp-server --agent-id planner --broker mqtt.example.com \
-  --port 8883 --tls --persistent --presence
+  --port 8883 --tls --persistent --presence \
+  --lifecycle persistent --capability planning \
+  --state-dir ~/.local/state/swarmbus
+
+# Ephemeral harness session. With username=loom-transient, Mosquitto can bind
+# the exact visible identity loom-transient-session-a1b2 to %u-%c.
+swarmbus mcp-server --agent-id loom-transient-session-a1b2 \
+  --client-id session-a1b2 --broker mqtt.example.com \
+  --port 8883 --tls --no-persistent --presence \
+  --lifecycle transient --capability harness.codex
 ```
 
-This replaces the daemon for most MCP-based agents. **Do not run a daemon and a persistent MCP server for the same agent-id** — only one client can hold the persistent session at a time; the broker will kick the first one off when the second connects.
+Registry records live at `swarmbus/registry/<agent-id>`; presence remains at `agents/<agent-id>/presence`. Capabilities are advisory routing claims, not authorization. A disconnected runtime can still drain messages already committed locally, but an empty inbox raises a transport error instead of looking like a healthy empty poll.
 
-If you do not use `--persistent`, the MCP server opens a fresh ephemeral session per `read_inbox`/`watch_inbox` call and only sees retained messages — the same limitation as `swarmbus read`.
+This replaces the daemon for most MCP-based agents. **Do not run a daemon and a persistent MCP server for the same agent-id** — only one client can hold the persistent session at a time; the broker will kick the first one off when the second connects. Without `--persistent`, the managed connection still lasts for the MCP process lifetime, but the broker does not queue messages while that process is offline.
 
 **Reactive wake for Claude Code** (optional). Archive gives you a trail but doesn't wake an idle Claude Code session. To wake a real reasoning turn on high-priority inbound, pair the daemon with `examples/claude-code-wake.sh`:
 

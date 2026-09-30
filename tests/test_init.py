@@ -433,3 +433,103 @@ class TestStepDoctor:
         for element in cmd:
             assert " " not in element, f"Element {element!r} contains space — subprocess would fail"
         assert "doctor" in cmd
+
+
+# ---------------------------------------------------------------------------
+# --topic-root propagation
+# ---------------------------------------------------------------------------
+
+#: The namespace a rooted deployment would use. Test input.
+TOPIC_ROOT = "loom"
+
+
+def _init_step_argvs(*extra_args, env=None):
+    """Run ``init`` and return every argv it handed to ``_run_step``.
+
+    ``_run_step`` is the single seam every subprocess init spawns passes
+    through, so capturing there sees the literal argv -- which is the
+    thing under test. Everything upstream of it (option parsing, the
+    step functions that build the commands) is the real implementation.
+
+    ``--host-type none`` and ``--skip-broker`` trim the run to the two
+    steps that matter here: the systemd installer and the doctor
+    subprocess.
+    """
+    captured: list[list[str]] = []
+
+    def fake_run_step(label, cmd, dry_run):
+        captured.append(cmd)
+        return True
+
+    with _patch_platform(), \
+         patch("swarmbus.cli.shutil.which", return_value="/usr/bin/swarmbus"), \
+         patch("swarmbus.cli._run_step", side_effect=fake_run_step):
+        result = CliRunner().invoke(main, [
+            "init", "--agent-id", "rx", "--host-type", "none",
+            "--skip-broker", "--dry-run", *extra_args,
+        ], env=env)
+    assert result.exit_code == 0, result.output
+    return captured
+
+
+def _only_argv_containing(argvs, needle):
+    """The single captured argv whose command contains ``needle``."""
+    matching = [cmd for cmd in argvs if needle in " ".join(cmd)]
+    assert len(matching) == 1, (
+        f"expected exactly one init step running {needle!r}, got {matching}"
+    )
+    return matching[0]
+
+
+class TestTopicRootPropagation:
+    """``swarmbus init --topic-root`` must reach BOTH subprocesses.
+
+    Two call sites, and missing either one is silent. ``install-systemd.sh``
+    writes the root into a ``topic.conf`` drop-in; without it the daemon
+    init just installed comes up unrooted and never hears anyone, with no
+    error at either end. And init runs ``doctor`` as a SUBPROCESS, so the
+    root it just installed lives in that drop-in and not in this process's
+    environment -- an unforwarded doctor probes the unrooted namespace and
+    cheerfully reports a healthy broker while the new daemon is talking
+    somewhere else.
+    """
+
+    def test_topic_root_reaches_the_install_systemd_argv(self):
+        argvs = _init_step_argvs("--topic-root", TOPIC_ROOT)
+        cmd = _only_argv_containing(argvs, "install-systemd.sh")
+        assert "--topic-root" in cmd, cmd
+        assert cmd[cmd.index("--topic-root") + 1] == TOPIC_ROOT, cmd
+
+    def test_topic_root_reaches_the_doctor_subprocess_argv(self):
+        argvs = _init_step_argvs("--topic-root", TOPIC_ROOT)
+        cmd = _only_argv_containing(argvs, "doctor")
+        assert "--topic-root" in cmd, cmd
+        assert cmd[cmd.index("--topic-root") + 1] == TOPIC_ROOT, cmd
+
+    def test_topic_root_from_the_env_var_reaches_both_argvs(self):
+        """The exported-in-a-shell case, which is the common one.
+
+        systemd does not inherit an operator's interactive environment,
+        so an exported root that init fails to forward configures every
+        interactive command and reaches the installed daemon not at all.
+        """
+        argvs = _init_step_argvs(env={"SWARMBUS_TOPIC_ROOT": TOPIC_ROOT})
+        for needle in ("install-systemd.sh", "doctor"):
+            cmd = _only_argv_containing(argvs, needle)
+            assert "--topic-root" in cmd, (needle, cmd)
+            assert cmd[cmd.index("--topic-root") + 1] == TOPIC_ROOT, (needle, cmd)
+
+    def test_unset_topic_root_omits_the_flag_from_both_argvs(self, monkeypatch):
+        """Absence of the flag, not an empty value.
+
+        ``--topic-root ''`` is not the same thing as no flag:
+        install-systemd.sh would still take the branch and doctor would
+        still parse an option. The unrooted default has to leave both
+        argvs byte-identical to what they were before the option existed.
+        """
+        monkeypatch.delenv("SWARMBUS_TOPIC_ROOT", raising=False)
+        argvs = _init_step_argvs()
+        for needle in ("install-systemd.sh", "doctor"):
+            cmd = _only_argv_containing(argvs, needle)
+            assert "--topic-root" not in cmd, (needle, cmd)
+            assert not any("topic-root" in element for element in cmd), (needle, cmd)

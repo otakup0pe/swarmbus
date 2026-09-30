@@ -384,3 +384,161 @@ async def test_listen_preserves_handler_registration_order():
         await bus.listen()
 
     assert order_recorded == ["A", "B", "C"]
+
+
+# ---------------------------------------------------------------------------
+# topic_root -- namespacing the agent and registry trees
+# ---------------------------------------------------------------------------
+
+
+def test_default_bus_topics_match_historical_wire_strings():
+    """No topic_root must reproduce the pre-rooting wire layout exactly.
+
+    The literals below ARE the backward-compatibility contract for every
+    deployment that never sets a root, so they are spelled out here rather
+    than derived from the map under test.
+    """
+    bus = AgentBus(agent_id="sparrow", broker="localhost")
+
+    assert bus.topics.inbox("sparrow") == "agents/sparrow/inbox"
+    assert bus.topics.presence("sparrow") == "agents/sparrow/presence"
+    assert bus.topics.registry("sparrow") == "swarmbus/registry/sparrow"
+    assert bus.topics.broadcast == "agents/broadcast"
+    assert bus.topics.any_presence_filter() == "agents/+/presence"
+
+
+@pytest.mark.asyncio
+async def test_rooted_bus_listens_under_root():
+    """topic_root prefixes the inbox/presence tree on the real listen path."""
+    bus = AgentBus(agent_id="sparrow", broker="localhost", topic_root="loom")
+    published = []
+    subscribed = []
+    will_topics = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            pass
+        async def publish(self, topic, payload, qos=0, retain=False):
+            published.append(topic)
+        async def subscribe(self, topic, qos=0):
+            subscribed.append(topic)
+        @property
+        def messages(self):
+            async def _gen():
+                if False:
+                    yield
+            return _gen()
+
+    def _capture_client(broker, port, will=None):
+        will_topics.append(str(will.topic) if will else None)
+        return FakeClient()
+
+    with patch("swarmbus.bus.aiomqtt.Client", side_effect=_capture_client):
+        await bus.listen()
+
+    assert published == ["loom/agents/sparrow/presence"]
+    assert subscribed[0] == "loom/agents/sparrow/inbox"
+    assert will_topics == ["loom/agents/sparrow/presence"]
+
+
+@pytest.mark.asyncio
+async def test_rooted_bus_sends_directed_message_under_root():
+    bus = AgentBus(agent_id="sparrow", broker="localhost", topic_root="loom")
+    published = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            pass
+        async def publish(self, topic, payload, qos=0, retain=False):
+            published.append(topic)
+
+    with patch("swarmbus.bus.aiomqtt.Client", return_value=FakeClient()):
+        await bus.send(to="wren", subject="hello", body="world")
+
+    assert published == ["loom/agents/wren/inbox"]
+
+
+@pytest.mark.asyncio
+async def test_broadcast_is_never_rooted_so_namespaces_still_hear_each_other():
+    """WHY this asymmetry exists: broadcast is bus-wide by design. Agents
+    living under different topic roots must still receive each other's
+    fan-out, so the broadcast topic deliberately ignores topic_root.
+    Rooting it would silo every namespace and is exactly the "consistency
+    fix" a future refactor will be tempted to make. Do not make it.
+    """
+    bus = AgentBus(agent_id="sparrow", broker="localhost", topic_root="loom")
+    published = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            pass
+        async def publish(self, topic, payload, qos=0, retain=False):
+            published.append(topic)
+        async def subscribe(self, topic, qos=0):
+            published.append(f"subscribe:{topic}")
+        @property
+        def messages(self):
+            async def _gen():
+                if False:
+                    yield
+            return _gen()
+
+    with patch("swarmbus.bus.aiomqtt.Client", return_value=FakeClient()):
+        await bus.send(to="broadcast", subject="all", body="hello everyone")
+        await bus.listen()
+
+    assert "agents/broadcast" in published  # published, not loom/agents/...
+    assert "subscribe:agents/broadcast" in published  # subscribed likewise
+    assert not any(t.endswith("loom/agents/broadcast") for t in published)
+
+
+@pytest.mark.asyncio
+async def test_probe_bus_uses_class_level_topic_map():
+    """probe() builds its instance with cls.__new__ and never runs
+    __init__, so the CLASS-level `AgentBus.topics` is the only topic map a
+    probe bus has. If someone "cleans up" by deleting that class attribute
+    in favour of the instance one assigned in __init__, every probe
+    operation blows up with AttributeError -- this test is the tripwire.
+    It drives the real list_agents() path rather than poking at the
+    attribute, so the failure shows up where operators would hit it.
+    """
+    class FakePresenceMessage:
+        payload = json.dumps({"agent": "wren", "status": "online"}).encode()
+
+    subscribed = []
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            pass
+        async def subscribe(self, topic, qos=0):
+            subscribed.append(topic)
+        @property
+        def messages(self):
+            async def _gen():
+                yield FakePresenceMessage()
+            return _gen()
+
+    with patch("swarmbus.bus.aiomqtt.Client", return_value=FakeClient()):
+        online = await AgentBus.probe(broker="localhost").list_agents()
+
+    assert subscribed == ["agents/+/presence"]
+    assert online == ["wren"]
+
+
+def test_rooted_bus_does_not_reroot_the_class_level_map():
+    """Rooting must stay per-instance. Implementing it by assigning to the
+    class attribute would silently re-root every probe bus (and every other
+    bus) in the process."""
+    rooted = AgentBus(agent_id="sparrow", broker="localhost", topic_root="loom")
+    probe = AgentBus.probe(broker="localhost")
+
+    assert rooted.topics.presence("sparrow") == "loom/agents/sparrow/presence"
+    assert probe.topics.any_presence_filter() == "agents/+/presence"

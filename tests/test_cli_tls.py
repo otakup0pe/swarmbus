@@ -1,4 +1,3 @@
-# tests/test_cli_tls.py
 """CLI surface tests for the broker auth + TLS flags added in issue #7.
 
 These verify two contracts:
@@ -212,6 +211,90 @@ def test_mcp_server_no_persistent_is_default():
     assert mock_run.call_args.kwargs["persistent"] is False
 
 
+def test_mcp_server_registry_options_thread_through():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            [
+                "mcp-server", "--agent-id", "sb",
+                "--state-dir", "/tmp/swarmbus",
+                "--registry-heartbeat-seconds", "30",
+                "--registry-stale-after-seconds", "90",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    kw = mock_run.call_args.kwargs
+    assert kw["state_dir"] == "/tmp/swarmbus"
+    assert kw["registry_heartbeat_seconds"] == 30
+    assert kw["registry_stale_after_seconds"] == 90
+
+
+def test_mcp_server_threads_identity_lifecycle_and_capabilities():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            [
+                "mcp-server",
+                "--agent-id",
+                "codex-session",
+                "--lifecycle",
+                "transient",
+                "--client-id",
+                "session-deadbeef",
+                "--capability",
+                "development.files.read",
+                "--capability",
+                "development.files.write",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    kw = mock_run.call_args.kwargs
+    assert kw["lifecycle"] == "transient"
+    assert kw["client_id"] == "session-deadbeef"
+    assert kw["capabilities"] == (
+        "development.files.read",
+        "development.files.write",
+    )
+
+
+def test_mcp_server_registry_options_pick_up_env():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            ["mcp-server", "--agent-id", "sb"],
+            env={
+                "SWARMBUS_STATE_DIR": "/tmp/from-env",
+                "SWARMBUS_REGISTRY_HEARTBEAT_SECONDS": "15",
+                "SWARMBUS_REGISTRY_STALE_AFTER_SECONDS": "45",
+            },
+        )
+    assert result.exit_code == 0, result.output
+    kw = mock_run.call_args.kwargs
+    assert kw["state_dir"] == "/tmp/from-env"
+    assert kw["registry_heartbeat_seconds"] == 15
+    assert kw["registry_stale_after_seconds"] == 45
+
+
+def test_mcp_server_rejects_stale_threshold_below_twice_heartbeat():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            [
+                "mcp-server", "--agent-id", "sb",
+                "--registry-heartbeat-seconds", "60",
+                "--registry-stale-after-seconds", "100",
+            ],
+        )
+    assert result.exit_code != 0
+    assert "at least twice" in result.output
+    mock_run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # start
 # ---------------------------------------------------------------------------
@@ -238,8 +321,19 @@ def test_start_passes_auth_through():
 # ---------------------------------------------------------------------------
 
 
-def test_doctor_passes_auth_to_probe():
-    """doctor threads auth kwargs into AgentBus.probe() for peer discovery."""
+def test_doctor_passes_auth_to_both_probes():
+    """doctor threads auth kwargs into BOTH of its AgentBus.probe() calls.
+
+    doctor builds a probe twice, ~160 lines apart: check 2 (broker
+    reachability) and check 7 (peer discovery). This test used to assert
+    ``call_count >= 1`` and then read ``call_args``, which is only the
+    LAST call -- so check 2 losing its credentials against a hardened
+    broker would have gone completely unnoticed here, and the symptom
+    would have been doctor reporting the broker unreachable when the
+    credentials it was given were fine all along.
+
+    Asserted per call site, the way the --topic-root tests already do it.
+    """
     runner = CliRunner()
     with patch("swarmbus.cli.AgentBus") as MockBus, \
          patch("swarmbus.cli.aiomqtt"):
@@ -250,13 +344,21 @@ def test_doctor_passes_auth_to_probe():
             ["doctor", "--agent-id", "test-agent",
              "--username", "alice", "--password", "secret", "--tls"],
         )
-    # probe() is called at least once (step 7); after the refactor, also step 2.
-    assert MockBus.probe.call_count >= 1
-    # Check the last call (step 7 peer discovery) has auth kwargs.
-    probe_kw = MockBus.probe.call_args.kwargs
-    assert probe_kw["username"] == "alice"
-    assert probe_kw["password"] == "secret"
-    assert probe_kw["tls"] is True
+    assert MockBus.probe.call_count == 2, (
+        f"expected doctor to build 2 probes (check 2 broker reachability "
+        f"and check 7 peer discovery), got {MockBus.probe.call_count}:\n"
+        f"{result.output}"
+    )
+    broker_check_kw, peer_discovery_kw = [
+        call.kwargs for call in MockBus.probe.call_args_list
+    ]
+    for site, probe_kw in (
+        ("check 2 broker reachability", broker_check_kw),
+        ("check 7 peer discovery", peer_discovery_kw),
+    ):
+        assert probe_kw["username"] == "alice", site
+        assert probe_kw["password"] == "secret", site
+        assert probe_kw["tls"] is True, site
 
 
 # ---------------------------------------------------------------------------

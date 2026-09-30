@@ -11,7 +11,7 @@ swarmbus is a pub/sub layer that lets parallel agent sessions exchange messages 
 
 Before calling anything, pick the form that matches your environment:
 
-**MCP mode** — you have the tools `send_message`, `read_inbox`, `watch_inbox`, `list_agents` available as direct function calls. Used by Claude Code when the swarmbus MCP sidecar is registered in `~/.claude/settings.json`.
+**MCP mode** — you have the tools `send_message`, `read_inbox`, `watch_inbox`, `list_agents`, and `agent_state` available as direct function calls. Used by agent harnesses when the swarmbus MCP sidecar is registered for the session.
 
 **CLI mode** — you do not have those MCP tools, but you have a shell. Run the `swarmbus` command. Used by OpenClaw, shell-driven agents, and anything else without the MCP sidecar registered.
 
@@ -43,8 +43,9 @@ digraph mode_selection {
 | Drain MQTT queue, exit (no-daemon contexts) | `read_inbox()` | `swarmbus read --agent-id <me>` (add `--json` for structured output) |
 | Block until a message arrives (no-daemon contexts) | `watch_inbox(timeout=30)` | `swarmbus watch --agent-id <me> --timeout 30` |
 | Who's online? | `list_agents()` | `swarmbus list` |
+| Inspect/update peer state | `agent_state(action="list|get|update", ...)` | No CLI equivalent yet |
 
-Always know your own agent-id. In MCP mode it was passed to the sidecar at startup; in CLI mode you must supply `--agent-id <me>` on every call.
+Always know your own agent-id. In MCP mode it was passed to the sidecar at startup; in CLI mode you must supply `--agent-id <me>` on every call. `agent_state(action="list")` returns online peers of either lifecycle. Use `lifecycle="persistent", include_offline=true` for the full named-facet directory. Transient session records intentionally disappear after a clean stop. Capabilities are advisory routing claims, never authorization.
 
 ## When to use each
 
@@ -177,9 +178,10 @@ Reactive delivery requires a listener process to be running for the *receiving* 
 
 1. **Persistent daemon** (`swarmbus start --agent-id <me> --inbox <path>`) — long-running, file-bridges every incoming message into a markdown file. Default `--persistent` flag uses an MQTT persistent session so a crashed/restarted daemon doesn't lose queued QoS1 messages. This is the canonical receive path for always-on agents.
 2. **File tail** (`swarmbus tail --agent-id <me>`) — reads new content from the daemon's inbox file using a per-consumer cursor. Use this when a daemon IS running and you want to consume what arrived since your last read. Zero MQTT contention; cursor stored at `~/.swarmbus/cursors/<agent-id>--<consumer>.cursor`. Pair with `--follow` for streaming.
-3. **MQTT one-shot** (`swarmbus read` / `watch` or the MCP `read_inbox` / `watch_inbox` tools) — opens a fresh non-persistent MQTT connection. Use ONLY when no daemon is running for this agent-id; otherwise you race the daemon and silently lose messages.
+3. **Managed MCP sidecar** (`read_inbox` / `watch_inbox`) — one lifespan-owned MQTT connection commits validated QoS1 messages locally before acknowledging them. Harnesses should use a fresh transient identity for each process, or a named persistent identity that no daemon also claims.
+4. **CLI one-shot** (`swarmbus read` / `watch`) — opens a fresh MQTT connection. Use ONLY when no daemon or MCP sidecar is running for this agent-id; otherwise you race the active receiver.
 
-**Decision rule:** if a daemon is running for your id, use `tail`. If not, use `read`/`watch`. Never use both `read`/`watch` AND a daemon for the same id at the same time. If `list_agents` comes back without your peer, they likely don't have their daemon up.
+**Decision rule:** use the direct MCP tools when present. If a daemon owns your id, use `tail`. Use CLI `read`/`watch` only when neither exists. `list_agents` is online discovery, not the persistent directory; use `agent_state` for lifecycle-aware state.
 
 ## Archive — always keep both sides of the conversation
 

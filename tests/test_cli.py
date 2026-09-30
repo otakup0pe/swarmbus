@@ -672,3 +672,45 @@ def test_list_json():
     assert result.exit_code == 0, result.output
     import json as _json
     assert _json.loads(result.output) == ["sparrow", "wren"]
+
+
+# ---------------------------------------------------------------------------
+# mcp-server --topic-root
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_server_topic_root_threads_through():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            ["mcp-server", "--agent-id", "sb", "--topic-root", "loom"],
+        )
+    assert result.exit_code == 0, result.output
+    assert mock_run.call_args.kwargs["topic_root"] == "loom"
+
+
+def test_mcp_server_topic_root_picks_up_env_var():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            ["mcp-server", "--agent-id", "sb"],
+            env={"SWARMBUS_TOPIC_ROOT": "loom"},
+        )
+    assert result.exit_code == 0, result.output
+    assert mock_run.call_args.kwargs["topic_root"] == "loom"
+
+
+def test_mcp_server_topic_root_defaults_to_unrooted():
+    """Empty default keeps the historical wire layout for every deployment
+    that never sets the flag."""
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as mock_run:
+        result = runner.invoke(
+            main,
+            ["mcp-server", "--agent-id", "sb"],
+            env={"SWARMBUS_TOPIC_ROOT": None},
+        )
+    assert result.exit_code == 0, result.output
+    assert mock_run.call_args.kwargs["topic_root"] == ""

@@ -76,6 +76,51 @@ def _broker_auth_options(func):
     return func
 
 
+def _topic_root_option(func):
+    """Apply --topic-root to a Click command.
+
+    ⛔ EVERY swarmbus process on a broker must agree on this value --
+    the MCP sidecars AND every CLI command. MQTT reports no error for
+    publishing to a topic nobody subscribes to, so a CLI left unrooted
+    against rooted sidecars makes `list` return nothing and `send` drop
+    messages, silently, exactly when an operator is reaching for them to
+    diagnose something. That is why this is a shared decorator rather
+    than an option on one command: adding a new command that talks to
+    the broker and forgetting the root is the failure, and a decorator
+    makes the omission visible at the definition site.
+
+    Envvar-backed so a rooted deployment can export SWARMBUS_TOPIC_ROOT
+    once and have every INTERACTIVE invocation agree without per-command
+    flags.
+
+    ⚠️ THE ENVVAR DOES NOT REACH SYSTEMD UNITS BY ITSELF. systemd does
+    not inherit an operator's interactive shell, so exporting
+    SWARMBUS_TOPIC_ROOT configures every interactive command and reaches
+    an installed daemon NOT AT ALL.
+
+    ✅ `swarmbus init` handles that for you: it forwards `--topic-root`
+    to `scripts/install-systemd.sh`, which writes a `topic.conf` drop-in
+    (its own file, NOT `auth.conf` -- the root is not a secret, and
+    auth.conf is only written when an auth arg is present), and also
+    forwards it to the `doctor` subprocess it runs to verify.
+
+    ⇒ The rule that remains: a daemon installed by any route OTHER than
+    `swarmbus init` needs the root set in its unit explicitly. A shell
+    export will look like it worked and will not be there at boot.
+    """
+    return click.option(
+        "--topic-root",
+        default="",
+        envvar="SWARMBUS_TOPIC_ROOT",
+        show_default=True,
+        help="Namespace prefix for the agent and registry topic trees, "
+             "e.g. 'loom' gives loom/agents/<id>/inbox. Empty (the "
+             "default) keeps the historical unrooted layout. Broadcast "
+             "is never rooted. MUST match every other swarmbus process "
+             "on this broker. [env: SWARMBUS_TOPIC_ROOT]",
+    )(func)
+
+
 def _resolve_outbox(explicit: str | None, agent_id: str) -> str | None:
     """Resolve the outbox path with this precedence:
 
@@ -135,6 +180,7 @@ def _resolve_outbox(explicit: str | None, agent_id: str) -> str | None:
          "`{agent_id}` template. Resolution order: --outbox > "
          "SWARMBUS_OUTBOX_<UPPER_AGENT_ID> > SWARMBUS_OUTBOX.",
 )
+@_topic_root_option
 @_broker_auth_options
 @click.pass_context
 def send(
@@ -150,6 +196,7 @@ def send(
     priority: str,
     reply_to: str | None,
     outbox: str | None,
+    topic_root: str,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -186,6 +233,7 @@ def send(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topic_root=topic_root,
     )
     resolved_outbox = _resolve_outbox(outbox, agent_id)
     try:
@@ -218,6 +266,7 @@ def send(
          "daemon restarts. Disable only if another process holds the same "
          "`swarmbus-<id>` client identifier.",
 )
+@_topic_root_option
 @_broker_auth_options
 def start(
     agent_id: str,
@@ -226,6 +275,7 @@ def start(
     inbox: str | None,
     invoke_cmd: str | None,
     persistent: bool,
+    topic_root: str,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -247,6 +297,7 @@ def start(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topic_root=topic_root,
     )
 
     if inbox:
@@ -281,6 +332,7 @@ def start(
 @click.option("--port", default=1883, show_default=True)
 @click.option("--max", "max_messages", default=10, show_default=True, help="Max messages to drain")
 @click.option("--json", "as_json", is_flag=True, help="Emit raw JSON array (default: pretty)")
+@_topic_root_option
 @_broker_auth_options
 def read(
     agent_id: str,
@@ -288,6 +340,7 @@ def read(
     port: int,
     max_messages: int,
     as_json: bool,
+    topic_root: str,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -319,6 +372,7 @@ def read(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topic_root=topic_root,
     )
     try:
         messages = asyncio.run(bus.read_inbox(max_messages=max_messages))
@@ -348,6 +402,7 @@ def read(
 @click.option("--port", default=1883, show_default=True)
 @click.option("--timeout", default=30.0, show_default=True, help="Seconds to wait")
 @click.option("--json", "as_json", is_flag=True, help="Emit raw JSON (default: pretty)")
+@_topic_root_option
 @_broker_auth_options
 def watch(
     agent_id: str,
@@ -355,6 +410,7 @@ def watch(
     port: int,
     timeout: float,
     as_json: bool,
+    topic_root: str,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -384,6 +440,7 @@ def watch(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topic_root=topic_root,
     )
     try:
         msg = asyncio.run(bus.watch_inbox(timeout=timeout))
@@ -408,11 +465,13 @@ def watch(
 @click.option("--broker", default="localhost", show_default=True)
 @click.option("--port", default=1883, show_default=True)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON array")
+@_topic_root_option
 @_broker_auth_options
 def list_agents_cmd(
     broker: str,
     port: int,
     as_json: bool,
+    topic_root: str,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -435,6 +494,7 @@ def list_agents_cmd(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topic_root=topic_root,
     )
     try:
         agents = asyncio.run(bus.list_agents())
@@ -628,11 +688,13 @@ def tail(
 @click.option("--agent-id", default=None, help="Agent id to audit. Defaults to auto-detect from systemd unit or env.")
 @click.option("--broker", default="localhost", show_default=True)
 @click.option("--port", default=1883, show_default=True)
+@_topic_root_option
 @_broker_auth_options
 def doctor(
     agent_id: str | None,
     broker: str,
     port: int,
+    topic_root: str,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -649,18 +711,40 @@ def doctor(
     prints a one-line fix hint. Exits 0 if every check is green, 1 if
     any is red, 2 if the doctor itself couldn't run.
 
+    ⚠️ AND 3 IF SOME CHECK COULD NOT BE VERIFIED. A check that was
+    applicable but did not complete reports status "unknown" and exits
+    3 -- distinct from 0 (green) and from 1 (something is actually
+    red), because unverified is neither.
+
+    ⇒ Scripts choose their own policy: treat 3 as failure in a CI gate,
+    or accept it with `[ $? -le 3 ]` on a hardened host where /proc is
+    restricted and the freshness check legitimately cannot run.
+
+    ⛔ Do NOT fold 3 back into 0 for convenience. Today the only check
+    that yields unknown is daemon library freshness -- the check that
+    exists because of the 2026-04-14 stale-code incident -- so a 3 means
+    exactly "the check we added because we got burned did not run".
+
+    Status glyphs: [OK] ok, [!] warn, [x] fail, [.] not applicable,
+    [?] applicable but unverified. "skip" and "unknown" are DIFFERENT:
+    skip means there was nothing to check, unknown means we could not.
+
     Use after any `pip install -U`, after tweaking a systemd unit, or
     when something "just stopped working" and you want a fast pass/fail
     signal before diving into logs.
     """
-    import glob
+    import ssl
     import subprocess
     from pathlib import Path
     from . import __version__
 
+    # _detect_agent_id shells out to `systemctl --user list-units`, so its
+    # failure modes are OSError (systemctl absent or not executable),
+    # subprocess.SubprocessError (its timeout=3 expiring, as TimeoutExpired),
+    # and the RuntimeError it raises itself for zero or ambiguous units.
     try:
         agent_id_resolved = agent_id or _detect_agent_id()
-    except Exception as exc:
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
         click.echo(f"[doctor] could not detect agent-id: {exc}", err=True)
         click.echo("[doctor] pass --agent-id <me> to proceed.", err=True)
         sys.exit(2)
@@ -668,7 +752,43 @@ def doctor(
     results: list[tuple[str, str, str | None]] = []
     # Each tuple: (label, status, fix_hint). status ∈ {"ok","warn","fail","skip"}
 
+    # Shared by checks 2 and 7: everything AgentBus.probe() plus an actual
+    # broker connect can raise. Narrowed deliberately -- doctor must keep
+    # running the rest of the checklist when the broker is the broken thing.
+    #
+    # - aiomqtt.MqttError: aiomqtt wraps every paho connect failure into
+    #   this, including the socket.gaierror of an unresolvable broker host,
+    #   connection-refused, auth rejection and TLS handshake failure. It is
+    #   also what bus.list_agents() documents as its broker-failure raise.
+    # - OSError: the cert and CA paths _build_tls_context reads BEFORE any
+    #   socket exists (missing cafile, unreadable key). socket.gaierror and
+    #   the builtin TimeoutError are OSError subclasses, so a raw one from
+    #   below aiomqtt lands here too.
+    # - ssl.SSLError: malformed PEM, or a client_key that does not match
+    #   client_cert, out of ssl.create_default_context / load_cert_chain.
+    #   It subclasses OSError; named explicitly because a TLS
+    #   misconfiguration is the likeliest thing an operator is here to find.
+    # - ValueError: _build_tls_context on a half-set mTLS pair (client_cert
+    #   without client_key), and TopicMap.__post_init__ on a --topic-root
+    #   containing an MQTT wildcard.
+    # - asyncio.TimeoutError: the 2.0s client timeout on the paths where
+    #   aiomqtt surfaces it unwrapped. On 3.11+ this is the builtin
+    #   TimeoutError; on 3.10 it is not, so it must be named separately.
+    _broker_probe_errors = (
+        aiomqtt.MqttError,
+        OSError,
+        ssl.SSLError,
+        ValueError,
+        asyncio.TimeoutError,
+    )
+
     # 1. CLI version
+    #
+    # ImportError: the package is not importable from this interpreter.
+    # AttributeError / TypeError: an installed-but-broken layout where
+    # swarmbus has no __file__, or __file__ is None (a namespace package),
+    # so Path(None) raises instead of yielding a directory. Check 4 reads
+    # _ab again and repeats the TypeError; see its handler.
     try:
         import swarmbus as _ab
         pkg_path = Path(_ab.__file__).parent
@@ -677,7 +797,7 @@ def doctor(
             "ok",
             None,
         ))
-    except Exception as exc:
+    except (ImportError, AttributeError, TypeError) as exc:
         results.append((f"swarmbus CLI version.... ERROR {exc}", "fail",
                         "pip install -e /path/to/swarmbus (editable install recommended)"))
 
@@ -688,6 +808,7 @@ def doctor(
             username=username, password=password,
             tls=tls, ca_cert=ca_cert,
             client_cert=client_cert, client_key=client_key,
+            topic_root=topic_root,
         )
 
         async def _probe_broker():
@@ -698,7 +819,7 @@ def doctor(
                 return True
         asyncio.run(_probe_broker())
         results.append((f"broker reachable........ {broker}:{port}", "ok", None))
-    except Exception as exc:
+    except _broker_probe_errors as exc:
         results.append((f"broker reachable........ {broker}:{port}: {exc}",
                         "fail",
                         f"systemctl status mosquitto  (or point --broker at a reachable host)"))
@@ -746,7 +867,15 @@ def doctor(
         main_pid = None
         exec_start = None
         start_ts = None
-    except Exception as exc:
+    # FileNotFoundError above is itself an OSError and must keep its own
+    # arm first. What is left for this one: OSError for the other exec
+    # failures (systemctl present but not executable, /run/user/<uid>
+    # unreachable), and subprocess.SubprocessError for the timeout=3
+    # expiring as TimeoutExpired when systemd is wedged -- which is exactly
+    # the state an operator runs doctor in. The dict() comprehension above
+    # cannot raise: it is guarded by `if "=" in line`, so every split("=", 1)
+    # yields a 2-tuple.
+    except (OSError, subprocess.SubprocessError) as exc:
         results.append((f"systemd user unit....... ERROR {exc}", "warn", None))
         main_pid = None
         exec_start = None
@@ -787,11 +916,33 @@ def doctor(
                         "ok", None,
                     ))
             except (FileNotFoundError, PermissionError, IndexError) as exc:
+                # "unknown", NOT "skip": the check was applicable and it
+                # BROKE. Reporting it as skip made doctor exit 0 and print
+                # "all green" while the staleness check -- whose reason to
+                # exist is the 2026-04-14 priority-field incident -- had
+                # silently not run.
                 results.append((f"daemon library fresh.... could not verify ({exc})",
-                                "skip", None))
+                                "unknown", None))
         else:
             results.append(("daemon library fresh.... (no daemon to check)", "skip", None))
-    except Exception as exc:
+    # Backstop for the /proc parsing and datetime arithmetic that the inner
+    # (FileNotFoundError, PermissionError, IndexError) arm does not cover:
+    #
+    # - OSError: a /proc read that fails with something other than the
+    #   ENOENT/EACCES handled inside (ESRCH when the daemon exits mid-read,
+    #   ENOTDIR), message.py's .stat(), and datetime.fromtimestamp on an
+    #   out-of-range mtime.
+    # - ValueError: float() on a /proc field that is not a number, and
+    #   read_text() on undecodable bytes (UnicodeDecodeError subclasses it).
+    # - TypeError: Path(_ab.__file__) when swarmbus.__file__ is None, the
+    #   same namespace-package case that reddens check 1.
+    # - OverflowError: now - timedelta(...) or fromtimestamp() when a
+    #   garbled /proc read lands outside datetime's representable range.
+    # - NameError: _ab is bound inside CHECK 1's try block. If check 1 died
+    #   before the import bound it, this check's reference is unbound. Today
+    #   that prints a warn line; without NameError here it would instead
+    #   abort the command and skip checks 5 through 7.
+    except (OSError, ValueError, TypeError, OverflowError, NameError) as exc:
         results.append((f"daemon library fresh.... ERROR {exc}", "warn", None))
 
     # 5. --invoke wired
@@ -825,7 +976,14 @@ def doctor(
                 f"outbox env resolvable... {resolved}",
                 "ok", None,
             ))
-        except Exception as exc:
+        # OSError: the point of the check -- mkdir/touch refused for
+        # permissions, a read-only mount, a parent that is a file
+        # (NotADirectoryError), or a path too long. ValueError: an embedded
+        # NUL in the env value, which the pathlib call rejects rather than
+        # the constructor. RuntimeError: Path.expanduser() when "~" cannot
+        # be resolved at all (no HOME and no passwd entry), which is live
+        # for a daemon-spawned shell.
+        except (OSError, ValueError, RuntimeError) as exc:
             results.append((
                 f"outbox env resolvable... {resolved}: NOT WRITABLE ({exc})",
                 "fail",
@@ -851,6 +1009,7 @@ def doctor(
             ca_cert=ca_cert,
             client_cert=client_cert,
             client_key=client_key,
+            topic_root=topic_root,
         )
         peers = asyncio.run(bus.list_agents())
         if agent_id_resolved in peers:
@@ -868,14 +1027,28 @@ def doctor(
                 f"systemctl --user restart {unit_name}  "
                 f"(daemon may not have announced presence)",
             ))
-    except Exception as exc:
+    # Same surface as check 2, plus list_agents() itself, which documents
+    # aiomqtt.MqttError as its broker-failure raise and swallows its own
+    # asyncio.TimeoutError and json decode errors internally.
+    except _broker_probe_errors as exc:
         results.append((f"peer discovery.......... ERROR {exc}", "fail", None))
 
     # Render
     click.echo(f"\n[doctor] swarmbus health check for agent-id={agent_id_resolved}\n")
-    icon_char = {"ok": "✓", "warn": "⚠", "fail": "✗", "skip": "·"}
-    color_map = {"ok": "green", "warn": "yellow", "fail": "red", "skip": None}
-    fails = warns = 0
+    # ⛔ "skip" and "unknown" are DIFFERENT and the distinction is the
+    # whole point. "skip" means NOT APPLICABLE (no daemon installed, no
+    # systemctl) -- there was nothing to check and that is fine. "unknown"
+    # means the check WAS applicable and could not complete.
+    #
+    # Before 2026-09-26 both were "skip", counted toward neither total, so
+    # a check that broke still reached "[doctor] all green." and exit 0.
+    # The failure reason was printed on its own line, and the summary and
+    # the exit code both contradicted it. An operator scripting on $? got
+    # green on a daemon nobody had actually verified.
+    icon_char = {"ok": "✓", "warn": "⚠", "fail": "✗", "skip": "·", "unknown": "?"}
+    color_map = {"ok": "green", "warn": "yellow", "fail": "red",
+                 "skip": None, "unknown": "yellow"}
+    fails = warns = unknown = 0
     for i, (label, status, hint) in enumerate(results, 1):
         char = icon_char[status]
         fg = color_map[status]
@@ -887,10 +1060,42 @@ def doctor(
             fails += 1
         elif status == "warn":
             warns += 1
+        elif status == "unknown":
+            unknown += 1
     click.echo("")
+    unverified = f", {unknown} unverified" if unknown else ""
     if fails:
-        click.echo(f"[doctor] {fails} failure(s), {warns} warning(s) — some checks are red.")
+        click.echo(f"[doctor] {fails} failure(s), {warns} warning(s)"
+                   f"{unverified} — some checks are red.")
         sys.exit(1)
+    elif unknown:
+        # ⚠️ Deliberately NOT "all critical checks passed" -- that sentence
+        # would be a claim about checks that did not run.
+        #
+        # ⛔ EXIT 3, NOT 0. The original bug was that the MACHINE-READABLE
+        # signal lied: a broken check still exited 0. Fixing only the
+        # printed summary would have left $? byte-identical, so the
+        # operator scripting on it -- the exact person the fix was for --
+        # still could not tell "green" from "could not check" without
+        # grepping stdout, which is what exit codes exist to avoid.
+        #
+        # 1 was wrong (unverified is not proven-broken, and failing would
+        # make doctor unusable wherever /proc is restricted) and 2 is
+        # taken by "doctor itself could not run". 3 lets each caller pick
+        # its own policy: a CI gate treats 3 as failure, a hardened-host
+        # healthcheck accepts it with `[ $? -le 3 ]`. No previously-green
+        # run changes code.
+        #
+        # 🔑 Why this is worth a distinct code rather than a warning:
+        # today the ONLY check that can yield unknown is daemon library
+        # freshness -- the check that exists because of the 2026-04-14
+        # stale-code incident. "unknown" therefore means precisely "the
+        # check we added because we got burned did not run", and that is
+        # the last thing that should report to a script as success.
+        click.echo(f"[doctor] {unknown} check(s) could not be verified"
+                   f"{f'; {warns} warning(s) above' if warns else ''}. "
+                   f"Health is UNKNOWN, not green.")
+        sys.exit(3)
     elif warns:
         click.echo(f"[doctor] all critical checks passed; {warns} warning(s) above.")
         sys.exit(0)
@@ -924,6 +1129,11 @@ def _detect_agent_id() -> str:
 
 @main.command("mcp-server")
 @click.option("--agent-id", required=True, help="This agent's ID")
+@click.option(
+    "--client-id",
+    default=None,
+    help="MQTT client ID; transient ACLs can bind it with %c.",
+)
 @click.option("--broker", default="localhost", show_default=True)
 @click.option("--port", default=1883, show_default=True)
 @click.option(
@@ -943,13 +1153,66 @@ def _detect_agent_id() -> str:
          "(offline). Makes this agent visible to `list_agents` without "
          "a listener daemon.",
 )
+@click.option(
+    "--lifecycle",
+    type=click.Choice(["persistent", "transient"]),
+    default="persistent",
+    show_default=True,
+    help="Registry identity lifecycle; independent of MQTT durability.",
+)
+@click.option(
+    "--capability",
+    "capabilities",
+    multiple=True,
+    help="Advisory capability to publish; repeat for multiple values.",
+)
+@click.option(
+    "--state-dir",
+    default="~/.local/state/swarmbus",
+    envvar="SWARMBUS_STATE_DIR",
+    show_default=True,
+    help="Private durable inbox directory. [env: SWARMBUS_STATE_DIR]",
+)
+@click.option(
+    "--topic-root",
+    default="",
+    envvar="SWARMBUS_TOPIC_ROOT",
+    show_default=True,
+    help="Namespace prefix for the agent and registry topic trees, e.g. "
+         "'loom' gives loom/agents/<id>/inbox. Empty (the default) keeps "
+         "the historical unrooted layout. Broadcast is never rooted -- it "
+         "stays bus-wide by design. ALL agents on a broker must agree on "
+         "this value or they cannot address each other. "
+         "[env: SWARMBUS_TOPIC_ROOT]",
+)
+@click.option(
+    "--registry-heartbeat-seconds",
+    type=click.FloatRange(min=0, min_open=True),
+    default=60.0,
+    envvar="SWARMBUS_REGISTRY_HEARTBEAT_SECONDS",
+    show_default=True,
+)
+@click.option(
+    "--registry-stale-after-seconds",
+    type=click.FloatRange(min=0, min_open=True),
+    default=180.0,
+    envvar="SWARMBUS_REGISTRY_STALE_AFTER_SECONDS",
+    show_default=True,
+)
 @_broker_auth_options
 def mcp_server(
     agent_id: str,
+    client_id: str | None,
     broker: str,
     port: int,
     persistent: bool,
     presence: bool,
+    lifecycle: str,
+    capabilities: tuple[str, ...],
+    state_dir: str,
+    topic_root: str,
+    registry_heartbeat_seconds: float,
+    registry_stale_after_seconds: float,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -958,6 +1221,12 @@ def mcp_server(
     tls: bool,
 ) -> None:
     """Start the MCP sidecar for this agent."""
+    if registry_stale_after_seconds < registry_heartbeat_seconds * 2:
+        raise click.BadParameter(
+            "must be at least twice --registry-heartbeat-seconds",
+            param_hint="--registry-stale-after-seconds",
+        )
+
     from .mcp_server import run_mcp_server
     run_mcp_server(
         agent_id=agent_id,
@@ -965,6 +1234,13 @@ def mcp_server(
         port=port,
         persistent=persistent,
         presence=presence,
+        lifecycle=lifecycle,
+        client_id=client_id,
+        capabilities=capabilities,
+        state_dir=state_dir,
+        topic_root=topic_root,
+        registry_heartbeat_seconds=registry_heartbeat_seconds,
+        registry_stale_after_seconds=registry_stale_after_seconds,
         username=username,
         password=password,
         tls=tls,
@@ -1124,12 +1400,22 @@ def _step_systemd(
     client_cert: str | None = None,
     client_key: str | None = None,
     tls: bool = False,
+    topic_root: str = "",
 ) -> bool:
     """Step 3: install the systemd user unit via install-systemd.sh.
 
     Auth + TLS args, if supplied, persist into a ``<unit>.service.d/auth.conf``
     drop-in so the credentials survive re-runs of install-systemd.sh and
     don't crowd the unit's ExecStart line.
+
+    ⛔ ``topic_root`` MUST be forwarded and cannot be left to the
+    environment. systemd user units do not inherit an operator's
+    interactive shell, so an exported SWARMBUS_TOPIC_ROOT configures every
+    interactive command and reaches the installed daemon NOT AT ALL. Before
+    this was threaded, `swarmbus init` against a rooted broker produced an
+    agent that came up unrooted and silently never heard anyone. It lands
+    in its own ``topic.conf`` drop-in, not ``auth.conf``: it is not a
+    secret, and auth.conf is written only when an auth arg is present.
     """
     label = "Systemd unit"
     cmd = [f"{scripts_dir}/install-systemd.sh", agent_id,
@@ -1149,6 +1435,8 @@ def _step_systemd(
         cmd += ["--client-key", client_key]
     if tls:
         cmd += ["--tls"]
+    if topic_root:
+        cmd += ["--topic-root", topic_root]
     return _run_step(label, cmd, dry_run)
 
 
@@ -1223,8 +1511,16 @@ def _step_plugin(
     return True
 
 
-def _step_doctor(agent_id: str, dry_run: bool) -> bool:
-    """Step 6: run swarmbus doctor and surface the result."""
+def _step_doctor(agent_id: str, dry_run: bool, topic_root: str = "") -> bool:
+    """Step 6: run swarmbus doctor and surface the result.
+
+    ⛔ topic_root must be passed explicitly. init runs doctor as a
+    SUBPROCESS, and the root it just installed lives in the unit's
+    topic.conf drop-in -- not in this process's environment. Without
+    forwarding it, init's own verification step probes the unrooted
+    namespace and reports a healthy broker while the daemon it just
+    installed is talking somewhere else entirely.
+    """
     label = "Doctor"
     swarmbus_on_path = shutil.which("swarmbus")
     if swarmbus_on_path:
@@ -1233,6 +1529,8 @@ def _step_doctor(agent_id: str, dry_run: bool) -> bool:
         # Fallback: run as a Python module. sys.executable is always a single
         # path, never a compound string, so it's safe as a list element.
         cmd = [sys.executable, "-m", "swarmbus", "doctor", "--agent-id", agent_id]
+    if topic_root:
+        cmd += ["--topic-root", topic_root]
     return _run_step(label, cmd, dry_run)
 
 
@@ -1256,6 +1554,7 @@ def _step_doctor(agent_id: str, dry_run: bool) -> bool:
 @click.option("--skip-plugin", is_flag=True, help="Skip host plugin install.")
 @click.option("--dry-run", is_flag=True, help="Print what would run without executing.")
 @click.option("--yes", is_flag=True, help="Non-interactive; accept all prompts.")
+@_topic_root_option
 @_broker_auth_options
 def init(
     agent_id: str,
@@ -1267,6 +1566,7 @@ def init(
     skip_plugin: bool,
     dry_run: bool,
     yes: bool,
+    topic_root: str,
     username: str | None,
     password: str | None,
     ca_cert: str | None,
@@ -1379,7 +1679,7 @@ def init(
             agent_id, broker_addr, resolved_inbox, invoke, scripts_dir, dry_run,
             username=username, password=password,
             ca_cert=ca_cert, client_cert=client_cert, client_key=client_key,
-            tls=tls,
+            tls=tls, topic_root=topic_root,
         )
     results.append(("Systemd unit", systemd_ok))
 
@@ -1399,7 +1699,7 @@ def init(
     results.append(("Host plugin", plugin_ok))
 
     # --- Step 6: Doctor
-    doctor_ok = _step_doctor(agent_id, dry_run)
+    doctor_ok = _step_doctor(agent_id, dry_run, topic_root)
     results.append(("Doctor", doctor_ok))
 
     # --- Summary

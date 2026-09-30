@@ -16,6 +16,28 @@ If **any** of the above is "yes", the bullet spells out the mitigation a running
 
 ---
 
+## [Unreleased]
+
+### Added
+- A lifespan-managed MCP runtime that owns one MQTT connection, persists validated inbound messages to SQLite before acknowledging QoS1 delivery, and reconnects with bounded backoff.
+- Retained schema-v1 registry records at `swarmbus/registry/<agent-id>`, combining heartbeat freshness with LWT-backed presence.
+- `agent_state(action="list|get|update", ...)` for peer state, status, awareness-only working sets, lifecycle filters, and advisory capabilities.
+- Persistent named-facet and transient session identity lifecycles. Transient runtimes tombstone retained registry and presence records on clean shutdown; persistent records remain discoverable offline.
+- `--state-dir`, `--registry-heartbeat-seconds`, `--registry-stale-after-seconds`, `--lifecycle`, repeatable `--capability`, and optional `--client-id` options for `swarmbus mcp-server`.
+
+### Changed
+- MCP `read_inbox` and `watch_inbox` now consume the local durable inbox instead of opening a new MQTT connection per call.
+- An empty local inbox reports a disconnected transport as an error; locally committed messages remain readable while disconnected.
+- Existing SQLite archives migrate in place with receipt, source-topic, and consumption columns.
+
+### Fixed
+- Heartbeat publication failures are logged without killing the heartbeat task.
+- Managed-runtime shutdown still closes local state when the final offline presence publish fails.
+
+**Wire-compat:** Existing envelope fields, inbox/broadcast/presence topics, and retain/QoS defaults are unchanged. This release adds the retained `swarmbus/registry/<agent-id>` topic at QoS 1. Existing MCP tools remain available; `agent_state` is additive, and `send_message` gains optional `priority` and `reply_to` parameters.
+
+---
+
 ## [0.1.5] — 2026-09-16
 
 ### Added
