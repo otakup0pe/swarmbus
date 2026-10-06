@@ -50,6 +50,21 @@ bus = AgentBus(
 
 Misconfigurations (e.g. `client_cert` without `client_key`, unreadable cert files) raise at construction time, not on the first network call — so a broken `swarmbus start` fails loudly at boot rather than silently sitting in a reconnect loop.
 
+## Split identity ACLs
+
+An agent ID may contain one dot. `team-agent.session-1` maps to the MQTT path `team-agent/session-1`. If the username is `team-agent` and the client ID is `session-1`, Mosquitto can grant only that identity's topics:
+
+```
+pattern read agents/%u/inbox
+pattern read agents/%u/%c/inbox
+pattern write agents/%u/presence
+pattern write agents/%u/%c/presence
+pattern write swarmbus/registry/%u
+pattern write swarmbus/registry/%u/%c
+```
+
+Grant outbound inbox writes, directory reads, and broadcast access separately for your trust model. Directory readers need both one- and two-level filters. Set `--topic-root` or `SWARMBUS_TOPIC_ROOT` consistently and prefix only the non-broadcast ACLs.
+
 ---
 
 ## systemd unit example

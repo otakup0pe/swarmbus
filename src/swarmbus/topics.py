@@ -5,10 +5,13 @@ parsed here.
 
 Layout (with the default empty root):
 
-    agents/<agent_id>/inbox        directed messages
-    agents/<agent_id>/presence     retained online/offline, also the LWT
-    agents/broadcast               bus-wide fan-out
-    swarmbus/registry/<agent_id>   retained registry record + heartbeat
+    agents/<agent_path>/inbox        directed messages
+    agents/<agent_path>/presence     retained online/offline, also the LWT
+    agents/broadcast                 bus-wide fan-out
+    swarmbus/registry/<agent_path>   retained registry record + heartbeat
+
+A dot in an agent ID becomes a topic separator. For example,
+``team-agent.session-1`` uses ``team-agent/session-1``.
 
 A non-empty ``root`` prefixes the agent and registry trees, e.g.
 ``TopicMap(root="foo")`` yields ``foo/agents/alice/inbox`` and
@@ -35,7 +38,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .message import _validate_agent_id
+from .message import _validate_agent_id, split_agent_id
 
 #: Tree holding per-agent inbox and presence topics.
 AGENTS_SEGMENT = "agents"
@@ -61,24 +64,15 @@ EMPTY_SEGMENT = "//"
 _MQTT_WILDCARDS = (SINGLE_LEVEL_WILDCARD, "#")
 
 
-def _one_agent_segment(candidate: str, *, prefix: str, topic: str) -> str:
-    """Extract exactly one agent-id segment sitting directly under ``prefix``.
-
-    ``candidate`` is ``topic`` with any trailing leaf already stripped;
-    ``topic`` is carried through only so error messages name the real topic.
-
-    Raises ValueError unless ``candidate`` is ``<prefix>/<one-segment>``.
-    A passthrough here (returning the input when the prefix is absent) is
-    how the old presence parser silently invented agent ids -- keep it
-    raising.
-    """
+def _agent_from_path(candidate: str, *, prefix: str, topic: str) -> str:
+    """Parse one or two topic levels back into an agent ID."""
     head = f"{prefix}/"
     if not candidate.startswith(head):
         raise ValueError(f"topic {topic!r} is not under {prefix!r}")
-    agent_id = candidate[len(head):]
-    if "/" in agent_id or not agent_id:
+    levels = candidate[len(head):].split("/")
+    if len(levels) not in (1, 2) or any(not level for level in levels):
         raise ValueError(f"topic {topic!r} does not identify one agent")
-    return _validate_agent_id(agent_id)
+    return _validate_agent_id(".".join(levels))
 
 
 @dataclass(frozen=True)
@@ -156,23 +150,25 @@ class TopicMap:
     # ------------------------------------------------------------------
     # builders
     #
-    # These do NOT validate the agent id. Every current caller already
-    # validated it (AgentBus.__init__ and AgentMessage's `to`/`from`
-    # validators run _validate_agent_id), and adding a
-    # second gate here would change behaviour rather than centralise it.
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _agent_path(agent_id: str) -> str:
+        return "/".join(split_agent_id(agent_id))
 
     def inbox(self, agent_id: str) -> str:
         """Directed-message topic for one agent."""
-        return f"{self.agents_prefix}/{agent_id}/{INBOX_LEAF}"
+        return f"{self.agents_prefix}/{self._agent_path(agent_id)}/{INBOX_LEAF}"
 
     def presence(self, agent_id: str) -> str:
         """Retained presence topic for one agent (also used as the LWT)."""
-        return f"{self.agents_prefix}/{agent_id}/{PRESENCE_LEAF}"
+        return (
+            f"{self.agents_prefix}/{self._agent_path(agent_id)}/{PRESENCE_LEAF}"
+        )
 
     def registry(self, agent_id: str) -> str:
         """Retained registry/heartbeat topic for one agent."""
-        return f"{self.registry_prefix}/{agent_id}"
+        return f"{self.registry_prefix}/{self._agent_path(agent_id)}"
 
     @property
     def broadcast(self) -> str:
@@ -195,23 +191,26 @@ class TopicMap:
     # subscribe filters
     # ------------------------------------------------------------------
 
-    def any_presence_filter(self) -> str:
-        """Subscription matching every agent's presence topic."""
-        return f"{self.agents_prefix}/{SINGLE_LEVEL_WILDCARD}/{PRESENCE_LEAF}"
+    def any_presence_filters(self) -> tuple[str, str]:
+        """Subscriptions matching one- and two-level agent presence."""
+        wildcard = SINGLE_LEVEL_WILDCARD
+        return (
+            f"{self.agents_prefix}/{wildcard}/{PRESENCE_LEAF}",
+            f"{self.agents_prefix}/{wildcard}/{wildcard}/{PRESENCE_LEAF}",
+        )
 
-    def any_registry_filter(self) -> str:
-        """Subscription matching every agent's registry topic."""
-        return f"{self.registry_prefix}/{SINGLE_LEVEL_WILDCARD}"
+    def any_registry_filters(self) -> tuple[str, str]:
+        """Subscriptions matching one- and two-level registry records."""
+        wildcard = SINGLE_LEVEL_WILDCARD
+        return (
+            f"{self.registry_prefix}/{wildcard}",
+            f"{self.registry_prefix}/{wildcard}/{wildcard}",
+        )
 
     # ------------------------------------------------------------------
     # predicates
     #
-    # Deliberately looser than the parsers: they answer "which tree did
-    # this arrive on" for dispatch, and preserve the exact startswith /
-    # endswith semantics the runtime used before this module existed. A
-    # topic can therefore pass a predicate and still fail its parser (e.g.
-    # `agents/a/b/presence`, which the `agents/+/presence` subscription
-    # cannot actually deliver) -- that raise is intended.
+    # Predicates classify the tree; parsers enforce the exact depth.
     # ------------------------------------------------------------------
 
     def is_registry_topic(self, topic: str) -> bool:
@@ -239,7 +238,7 @@ class TopicMap:
         agent_id inside the payload, so a lenient parse here would let a
         record claim an identity the topic never granted it.
         """
-        return _one_agent_segment(
+        return _agent_from_path(
             topic, prefix=self.registry_prefix, topic=topic
         )
 
@@ -254,7 +253,7 @@ class TopicMap:
         leaf = f"/{PRESENCE_LEAF}"
         if not topic.endswith(leaf):
             raise ValueError(f"topic {topic!r} is not a presence topic")
-        return _one_agent_segment(
+        return _agent_from_path(
             topic[: -len(leaf)], prefix=self.agents_prefix, topic=topic
         )
 

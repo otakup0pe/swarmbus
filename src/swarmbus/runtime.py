@@ -21,7 +21,7 @@ from .registry import (
     RegistryRecord,
     presence_payload,
 )
-from .topics import DEFAULT_TOPICS
+from .topics import DEFAULT_TOPICS, TopicMap
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +29,11 @@ _RECONNECT_BACKOFF_MAX = 60.0
 _STORE_RETRY_BACKOFF_MAX = 60.0
 _CONNECTION_STABILITY_SECONDS = 30.0
 _REPLAY_SETTLE_SECONDS = 0.1
+_RUNTIME_CAPABILITIES = frozenset({
+    "messaging",
+    "durable-inbox",
+    "agent-state",
+})
 
 
 class TransportUnavailable(RuntimeError):
@@ -118,6 +123,7 @@ class ManagedMCPRuntime:
         client_cert: str | None = None,
         client_key: str | None = None,
         store: SQLiteMessageStore | Any | None = None,
+        topics: TopicMap = DEFAULT_TOPICS,
     ) -> None:
         _validate_registered_agent_id(agent_id)
         if lifecycle not in {"persistent", "transient"}:
@@ -169,7 +175,7 @@ class ManagedMCPRuntime:
             client_key=client_key,
         )
         self.store = store or SQLiteMessageStore(state_path)
-        self.topics = DEFAULT_TOPICS
+        self.topics = topics
         self.registry = RegistryCache(
             stale_after_seconds=stale_after_seconds,
             topics=self.topics,
@@ -177,11 +183,10 @@ class ManagedMCPRuntime:
         self.started_at = datetime.now(timezone.utc)
         self.status = ""
         self.working_set: list[str] = []
-        self.runtime_capabilities = [
-            "messaging",
-            "durable-inbox",
-            "agent-state",
-        ]
+        self.runtime_capabilities = ["messaging"]
+        if self.durable:
+            self.runtime_capabilities.append("durable-inbox")
+        self.runtime_capabilities.append("agent-state")
         normalized_capabilities = RegistryRecord(
             agent_id=self.agent_id,
             capabilities=list(capabilities),
@@ -189,11 +194,10 @@ class ManagedMCPRuntime:
             started_at=self.started_at,
             last_seen=self.started_at,
         ).capabilities
-        runtime_capabilities = set(self.runtime_capabilities)
         self.declared_capabilities = [
             capability
             for capability in normalized_capabilities
-            if capability not in runtime_capabilities
+            if capability not in _RUNTIME_CAPABILITIES
         ]
         self._client: aiomqtt.Client | None = None
         self._connection_task: asyncio.Task | None = None
@@ -430,12 +434,12 @@ class ManagedMCPRuntime:
                     await client.subscribe(self.topics.broadcast, qos=1)
                     if self.presence:
                         # Presence-free runtimes do not subscribe to directory data.
-                        await client.subscribe(
-                            self.topics.any_presence_filter(), qos=1
+                        filters = (
+                            *self.topics.any_presence_filters(),
+                            *self.topics.any_registry_filters(),
                         )
-                        await client.subscribe(
-                            self.topics.any_registry_filter(), qos=1
-                        )
+                        for topic_filter in filters:
+                            await client.subscribe(topic_filter, qos=1)
                     self._client = client
                     if self.durable:
                         self._replay_activity_at = (
@@ -862,11 +866,10 @@ class ManagedMCPRuntime:
         )
         self.status = candidate.status
         self.working_set = candidate.working_set
-        runtime_capabilities = set(self.runtime_capabilities)
         self.declared_capabilities = [
             capability
             for capability in candidate.capabilities
-            if capability not in runtime_capabilities
+            if capability not in _RUNTIME_CAPABILITIES
         ]
         await self._publish_registry()
         return self.registry.get_state(self.agent_id)

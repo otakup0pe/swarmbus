@@ -38,8 +38,14 @@ def test_unrooted_builders_match_the_legacy_literals():
 def test_unrooted_filters_match_the_legacy_subscriptions():
     topics = TopicMap()
 
-    assert topics.any_presence_filter() == "agents/+/presence"
-    assert topics.any_registry_filter() == "swarmbus/registry/+"
+    assert topics.any_presence_filters() == (
+        "agents/+/presence",
+        "agents/+/+/presence",
+    )
+    assert topics.any_registry_filters() == (
+        "swarmbus/registry/+",
+        "swarmbus/registry/+/+",
+    )
 
 
 def test_default_topics_is_rootless():
@@ -63,8 +69,22 @@ def test_rooted_builders_prefix_the_agent_and_registry_trees():
     assert ROOTED.inbox("wren") == "foo/agents/wren/inbox"
     assert ROOTED.presence("wren") == "foo/agents/wren/presence"
     assert ROOTED.registry("wren") == "foo/swarmbus/registry/wren"
-    assert ROOTED.any_presence_filter() == "foo/agents/+/presence"
-    assert ROOTED.any_registry_filter() == "foo/swarmbus/registry/+"
+    assert ROOTED.any_presence_filters() == (
+        "foo/agents/+/presence",
+        "foo/agents/+/+/presence",
+    )
+    assert ROOTED.any_registry_filters() == (
+        "foo/swarmbus/registry/+",
+        "foo/swarmbus/registry/+/+",
+    )
+
+
+def test_two_level_agent_ids_split_across_mqtt_topic_levels():
+    agent_id = "team-agent.session-123"
+
+    assert ROOTED.inbox(agent_id) == "foo/agents/team-agent/session-123/inbox"
+    assert ROOTED.presence(agent_id) == "foo/agents/team-agent/session-123/presence"
+    assert ROOTED.registry(agent_id) == "foo/swarmbus/registry/team-agent/session-123"
 
 
 def test_broadcast_never_picks_up_the_root():
@@ -172,8 +192,9 @@ def test_root_normalisation_is_one_strip_pass_regression_inner_space_survived_ch
 
 def test_parsers_round_trip_their_builders():
     for topics in (TopicMap(), ROOTED):
-        assert topics.presence_agent(topics.presence("wren")) == "wren"
-        assert topics.registry_agent(topics.registry("wren")) == "wren"
+        for agent_id in ("wren", "team-agent.session-123"):
+            assert topics.presence_agent(topics.presence(agent_id)) == agent_id
+            assert topics.registry_agent(topics.registry(agent_id)) == agent_id
 
 
 # ---------------------------------------------------------------------------
@@ -194,7 +215,7 @@ def test_parsers_round_trip_their_builders():
         "agents/wren/inbox",
         "agents/wren",
         # Right tree, wrong depth.
-        "agents/wren/extra/presence",
+        "agents/wren/extra/deep/presence",
         # Empty agent segment.
         "agents//presence",
         "agents/presence",
@@ -215,7 +236,7 @@ def test_presence_parser_raises_on_a_mismatched_topic(topic):
     [
         "wren",
         "foo/swarmbus/registry/wren",
-        "swarmbus/registry/wren/extra",
+        "swarmbus/registry/wren/extra/deep",
         "swarmbus/registry/",
         "swarmbus/registry",
         "agents/wren/presence",

@@ -52,6 +52,8 @@ swarmbus init --agent-id planner
 swarmbus init --agent-id coder
 ```
 
+Agent IDs are lowercase and may contain one dot. The dot separates two MQTT topic levels, so `team-agent.session-1` maps to `team-agent/session-1`.
+
 Each `init` run:
 - Installs mosquitto (if not already running)
 - Installs the systemd user unit for this agent
@@ -87,7 +89,7 @@ swarmbus send --agent-id planner --to coder --subject "hi" --body "got a minute?
   export SWARMBUS_OUTBOX_PLANNER=~/sync/planner-outbox.md
   export SWARMBUS_OUTBOX_CODER=~/sync/coder-outbox.md
   ```
-  Hyphens in the agent-id become underscores (`coder-beta` → `SWARMBUS_OUTBOX_CODER_BETA`).
+  Hyphens and dots in the agent-id become underscores (`coder-beta.session-1` → `SWARMBUS_OUTBOX_CODER_BETA_SESSION_1`).
 
 Resolution order (highest first): `--outbox` flag, `SWARMBUS_OUTBOX_<ID>`, `SWARMBUS_OUTBOX`, none.
 

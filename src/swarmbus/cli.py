@@ -13,9 +13,11 @@ import aiomqtt
 import click
 
 from .bus import AgentBus
-from .handlers.file_bridge import FileBridgeHandler
 from .handlers.direct_invoke import DirectInvocationHandler
+from .handlers.file_bridge import FileBridgeHandler
 from .handlers.persistent import PersistentListenerHandler
+from .message import _validate_registered_agent_id
+from .topics import TopicMap
 
 
 @click.group()
@@ -76,12 +78,44 @@ def _broker_auth_options(func):
     return func
 
 
+def _normalize_topic_root(
+    ctx: click.Context,
+    _param: click.Parameter,
+    value: str,
+) -> None:
+    try:
+        ctx.meta["swarmbus_topics"] = TopicMap(root=value)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def _topic_root_option(func):
+    return click.option(
+        "--topic-root",
+        default="",
+        envvar="SWARMBUS_TOPIC_ROOT",
+        callback=_normalize_topic_root,
+        expose_value=False,
+        help="Namespace directed inbox, presence, and registry topics. "
+             "Broadcast remains swarmbus-wide. [env: SWARMBUS_TOPIC_ROOT]",
+    )(func)
+
+
+def _configured_topics() -> TopicMap:
+    return click.get_current_context().meta["swarmbus_topics"]
+
+
+def _scoped_outbox_key(agent_id: str) -> str:
+    suffix = agent_id.replace("-", "_").replace(".", "_").upper()
+    return f"SWARMBUS_OUTBOX_{suffix}"
+
+
 def _resolve_outbox(explicit: str | None, agent_id: str) -> str | None:
     """Resolve the outbox path with this precedence:
 
     1. `--outbox` flag (passed in `explicit`) — highest.
-    2. `SWARMBUS_OUTBOX_<UPPER_AGENT_ID>` — agent-scoped env var. Hyphens in
-       the agent-id become underscores so `coder-beta` → `SWARMBUS_OUTBOX_CODER_BETA`.
+    2. `SWARMBUS_OUTBOX_<UPPER_AGENT_ID>` — agent-scoped env var. Hyphens
+       and dots become underscores.
     3. `SWARMBUS_OUTBOX` — shared env var. Supports `{agent_id}` template.
     4. None — no archive.
 
@@ -90,7 +124,7 @@ def _resolve_outbox(explicit: str | None, agent_id: str) -> str | None:
     """
     if explicit is not None:
         return explicit
-    scoped_key = "SWARMBUS_OUTBOX_" + agent_id.replace("-", "_").upper()
+    scoped_key = _scoped_outbox_key(agent_id)
     scoped = os.environ.get(scoped_key)
     if scoped is not None:
         return scoped
@@ -135,6 +169,7 @@ def _resolve_outbox(explicit: str | None, agent_id: str) -> str | None:
          "`{agent_id}` template. Resolution order: --outbox > "
          "SWARMBUS_OUTBOX_<UPPER_AGENT_ID> > SWARMBUS_OUTBOX.",
 )
+@_topic_root_option
 @_broker_auth_options
 @click.pass_context
 def send(
@@ -186,6 +221,7 @@ def send(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
     )
     resolved_outbox = _resolve_outbox(outbox, agent_id)
     try:
@@ -218,6 +254,7 @@ def send(
          "daemon restarts. Disable only if another process holds the same "
          "`swarmbus-<id>` client identifier.",
 )
+@_topic_root_option
 @_broker_auth_options
 def start(
     agent_id: str,
@@ -247,6 +284,7 @@ def start(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
     )
 
     if inbox:
@@ -266,7 +304,7 @@ def start(
     click.echo(f"  durable:     {'yes' if durable else 'no'}")
     click.echo(f"  inbox:       {inbox or '(unset — no file bridge)'}")
     click.echo(f"  invoke:      {invoke_cmd or '(unset — no reactive wake)'}")
-    scoped_key = "SWARMBUS_OUTBOX_" + agent_id.replace("-", "_").upper()
+    scoped_key = _scoped_outbox_key(agent_id)
     outbox_env = os.environ.get(scoped_key) or os.environ.get("SWARMBUS_OUTBOX") or "(unset)"
     click.echo(f"  outbox env:  {outbox_env}")
     try:
@@ -281,6 +319,7 @@ def start(
 @click.option("--port", default=1883, show_default=True)
 @click.option("--max", "max_messages", default=10, show_default=True, help="Max messages to drain")
 @click.option("--json", "as_json", is_flag=True, help="Emit raw JSON array (default: pretty)")
+@_topic_root_option
 @_broker_auth_options
 def read(
     agent_id: str,
@@ -319,6 +358,7 @@ def read(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
     )
     try:
         messages = asyncio.run(bus.read_inbox(max_messages=max_messages))
@@ -348,6 +388,7 @@ def read(
 @click.option("--port", default=1883, show_default=True)
 @click.option("--timeout", default=30.0, show_default=True, help="Seconds to wait")
 @click.option("--json", "as_json", is_flag=True, help="Emit raw JSON (default: pretty)")
+@_topic_root_option
 @_broker_auth_options
 def watch(
     agent_id: str,
@@ -384,6 +425,7 @@ def watch(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
     )
     try:
         msg = asyncio.run(bus.watch_inbox(timeout=timeout))
@@ -408,6 +450,7 @@ def watch(
 @click.option("--broker", default="localhost", show_default=True)
 @click.option("--port", default=1883, show_default=True)
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON array")
+@_topic_root_option
 @_broker_auth_options
 def list_agents_cmd(
     broker: str,
@@ -435,6 +478,7 @@ def list_agents_cmd(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
     )
     try:
         agents = asyncio.run(bus.list_agents())
@@ -628,6 +672,7 @@ def tail(
 @click.option("--agent-id", default=None, help="Agent id to audit. Defaults to auto-detect from systemd unit or env.")
 @click.option("--broker", default="localhost", show_default=True)
 @click.option("--port", default=1883, show_default=True)
+@_topic_root_option
 @_broker_auth_options
 def doctor(
     agent_id: str | None,
@@ -688,6 +733,7 @@ def doctor(
             username=username, password=password,
             tls=tls, ca_cert=ca_cert,
             client_cert=client_cert, client_key=client_key,
+            topics=_configured_topics(),
         )
 
         async def _probe_broker():
@@ -813,7 +859,7 @@ def doctor(
         results.append(("--invoke wired.......... (no unit to inspect)", "skip", None))
 
     # 6. Outbox env var resolvable
-    scoped_key = "SWARMBUS_OUTBOX_" + agent_id_resolved.replace("-", "_").upper()
+    scoped_key = _scoped_outbox_key(agent_id_resolved)
     outbox_env = os.environ.get(scoped_key) or os.environ.get("SWARMBUS_OUTBOX")
     if outbox_env:
         resolved = outbox_env.replace("{agent_id}", agent_id_resolved)
@@ -835,7 +881,7 @@ def doctor(
         results.append((
             "outbox env resolvable... (unset)",
             "warn",
-            f"export SWARMBUS_OUTBOX_{agent_id_resolved.upper()}=~/sync/"
+            f"export {scoped_key}=~/sync/"
             f"{agent_id_resolved}-outbox.md   (or SWARMBUS_OUTBOX with "
             f"{{agent_id}} template)",
         ))
@@ -851,6 +897,7 @@ def doctor(
             ca_cert=ca_cert,
             client_cert=client_cert,
             client_key=client_key,
+            topics=_configured_topics(),
         )
         peers = asyncio.run(bus.list_agents())
         if agent_id_resolved in peers:
@@ -967,6 +1014,7 @@ def _maintenance_password(
     type=click.Path(exists=True, dir_okay=False, readable=True),
     help="Read the broker password from this file.",
 )
+@_topic_root_option
 @_broker_auth_options
 def registry_list(
     broker: str,
@@ -995,6 +1043,7 @@ def registry_list(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
         snapshot_seconds=snapshot_seconds,
     )
     report = asyncio.run(
@@ -1045,6 +1094,7 @@ def registry_list(
     type=click.Path(exists=True, dir_okay=False, readable=True),
     help="Read the broker password from this file.",
 )
+@_topic_root_option
 @_broker_auth_options
 def registry_gc(
     broker: str,
@@ -1076,6 +1126,7 @@ def registry_gc(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
         snapshot_seconds=snapshot_seconds,
     )
     report = asyncio.run(
@@ -1132,6 +1183,7 @@ def registry_gc(
     type=click.Path(exists=True, dir_okay=False, readable=True),
     help="Read the broker password from this file.",
 )
+@_topic_root_option
 @_broker_auth_options
 def registry_forget(
     agent_id: str,
@@ -1170,6 +1222,7 @@ def registry_forget(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topics=_configured_topics(),
         snapshot_seconds=snapshot_seconds,
     )
     try:
@@ -1269,6 +1322,7 @@ def registry_forget(
     show_default=True,
     help="Directory for the durable SQLite inbox. [env: SWARMBUS_STATE_DIR]",
 )
+@_topic_root_option
 @_broker_auth_options
 def mcp_server(
     agent_id: str,
@@ -1329,6 +1383,7 @@ def mcp_server(
         ca_cert=ca_cert,
         client_cert=client_cert,
         client_key=client_key,
+        topic_root=_configured_topics().root,
     )
 
 
@@ -1337,10 +1392,6 @@ def mcp_server(
 # ---------------------------------------------------------------------------
 
 from .platform import detect_platform, find_repo_root, resolve_broker_addr
-
-
-_AGENT_ID_RE = _re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
-_RESERVED_AGENT_IDS = frozenset({"broadcast", "system"})
 
 
 def _derive_invoke(host_type: str, agent_id: str, repo_root: str | None) -> str | None:
@@ -1595,8 +1646,11 @@ def _step_doctor(agent_id: str, dry_run: bool) -> bool:
 
 
 @main.command()
-@click.option("--agent-id", required=True,
-              help="Agent identifier (lowercase alphanumeric, hyphens, underscores)")
+@click.option(
+    "--agent-id",
+    required=True,
+    help="Agent identifier; one optional dot separates MQTT topic levels.",
+)
 @click.option(
     "--host-type",
     type=click.Choice(["cc", "openclaw", "none"], case_sensitive=False),
@@ -1643,17 +1697,10 @@ def init(
     from pathlib import Path as _Path
 
     # --- Validate agent-id
-    if not _AGENT_ID_RE.match(agent_id):
-        raise click.BadParameter(
-            f"{agent_id!r} is not valid. Use lowercase letters, digits, hyphens, "
-            "underscores (1–63 chars); must start with a letter or digit.",
-            param_hint="--agent-id",
-        )
-    if agent_id in _RESERVED_AGENT_IDS:
-        raise click.BadParameter(
-            f"{agent_id!r} is reserved and cannot be used as an agent id.",
-            param_hint="--agent-id",
-        )
+    try:
+        _validate_registered_agent_id(agent_id)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc), param_hint="--agent-id") from exc
 
     # --- Resolve broker address (may shell out for tailscale)
     try:
@@ -1768,9 +1815,9 @@ def init(
     if not failed:
         click.echo(click.style(f"✓  {agent_id} is ready.", fg="green", bold=True))
         click.echo("")
-        upper_id = agent_id.replace("-", "_").upper()
+        scoped_key = _scoped_outbox_key(agent_id)
         click.echo("To set outbox archiving in your shell:")
-        click.echo(f'  export SWARMBUS_OUTBOX_{upper_id}="$HOME/sync/{agent_id}-outbox.md"')
+        click.echo(f'  export {scoped_key}="$HOME/sync/{agent_id}-outbox.md"')
         click.echo("")
         click.echo("The daemon is running. Your agent can now receive messages.")
         click.echo(f"Send a test:")

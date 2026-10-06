@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator, Literal, Protocol
 import aiomqtt
 
 from .runtime import ManagedMCPRuntime, TransportUnavailable
+from .topics import TopicMap
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,7 @@ def run_mcp_server(
     state_dir: str = "~/.local/state/swarmbus",
     registry_heartbeat_seconds: float = 60,
     registry_stale_after_seconds: float = 180,
+    topic_root: str = "",
     username: str | None = None,
     password: str | None = None,
     tls: bool = False,
@@ -224,6 +226,7 @@ def run_mcp_server(
         stale_after_seconds=registry_stale_after_seconds,
         capabilities=capabilities,
         state_path=state_path,
+        topics=TopicMap(root=topic_root),
         username=username,
         password=password,
         tls=tls,

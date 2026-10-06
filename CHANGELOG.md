@@ -27,12 +27,15 @@ If **any** of the above is "yes", the bullet spells out the mitigation a running
 - **Registry maintenance commands** — `registry-list` inspects retained identities, `registry-gc` collects expired transients, and `registry-forget` explicitly retires one identity.
 
 ### Changed
+- Agent IDs may contain one dot; it becomes an extra MQTT topic level. Directory consumers subscribe to both depths.
+- Broker-facing commands accept `--topic-root` / `SWARMBUS_TOPIC_ROOT`; directed topics and the registry are rooted, while broadcast remains global.
 - **Messaging-only without `--presence`** — presence-free sidecars no longer subscribe to directory topics. `agent_state` raises `PresenceRequiredError`; send and inbox tools are unaffected.
 - **`--persistent` is now `--durable`** on `swarmbus start`, `swarmbus mcp-server`, and the Python API. There is no compatibility alias. `--durable` now requires `--presence`; defaults are unchanged.
 - `--lifecycle transient` requires `--presence`. Clean transient shutdown tombstones presence before registry state and destroys any durable MQTT session.
 - A refused `registry-forget` now exits non-zero after printing its report. Interactive use prompts for confirmation; `--yes` bypasses the prompt.
 
 ### Fixed
+- Non-durable runtimes no longer advertise `durable-inbox`.
 - `agent_state(action="list"|"get")` now raises `TransportUnavailable` while disconnected instead of serving stale or empty directory results.
 - Registry GC preserves partial reports across broker failures, accounts for skipped and malformed records consistently, reports presence orphans without deleting them, and destroys durable sessions when retiring their identities.
 - `AgentBus.list_agents` derives identity from the broker-authorized presence topic rather than trusting the payload claim.
@@ -45,7 +48,7 @@ If **any** of the above is "yes", the bullet spells out the mitigation a running
 
 ### Wire-compat
 1. **Envelope shape — no change.**
-2. **Topic layout — no change.**
+2. **Topic layout — additive.** Dotted IDs use two MQTT levels; optional roots prefix directed topics and the registry. Broadcast and rootless one-level IDs are unchanged.
 3. **Retain/QoS defaults — no change.** The MCP server remains non-durable by default; managed inbox acknowledgement timing changed, not publish or subscribe defaults.
 4. **MCP tool contract — breaking consolidation.** `watch_inbox` is replaced by `read_inbox(wait_seconds=...)`; `read_inbox` gains optional `ack_ids` and `max_messages`. `list_agents` is replaced by `agent_state(action="list")`, which requires a presence-enabled, connected sidecar. Restart the sidecar and update its behavioral skill together.
 

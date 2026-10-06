@@ -113,6 +113,15 @@ class TestAgentIdValidation:
              patch("swarmbus.cli.find_repo_root", return_value=None):
             assert self._invoke("agent_01") == 0
 
+    def test_valid_with_topic_separator(self):
+        with patch("swarmbus.cli.resolve_broker_addr", return_value="localhost"), \
+             patch("swarmbus.cli.detect_platform", return_value="debian"), \
+             patch("swarmbus.cli.find_repo_root", return_value=None):
+            assert self._invoke("team-agent.session-01") == 0
+
+    def test_invalid_multiple_topic_separators(self):
+        assert self._invoke("team.agent.session-01") == 2
+
     def test_invalid_uppercase(self):
         assert self._invoke("Sparrow") == 2
 

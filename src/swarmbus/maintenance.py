@@ -334,8 +334,8 @@ class RegistryMaintenance:
 
         snapshot = await self._snapshot(
             (
-                self.topics.any_registry_filter(),
-                self.topics.any_presence_filter(),
+                *self.topics.any_registry_filters(),
+                *self.topics.any_presence_filters(),
             )
         )
         identities = []
@@ -389,8 +389,8 @@ class RegistryMaintenance:
 
         initial = await self._snapshot(
             (
-                self.topics.any_registry_filter(),
-                self.topics.any_presence_filter(),
+                *self.topics.any_registry_filters(),
+                *self.topics.any_presence_filters(),
             )
         )
         preserved: Counter[str] = Counter()

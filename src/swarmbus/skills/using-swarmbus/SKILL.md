@@ -255,5 +255,5 @@ These thoughts mean STOP — you're about to lose messages, duplicate deliveries
 ## If things look wrong
 
 - `list` returns empty → broker reachable but no peers are running their listeners, or your connection can't reach the broker. Check with `mosquitto_sub -h <broker> -t '$SYS/broker/clients/connected' -C 1`.
-- `send` succeeds but the peer never sees it → verify agent-id spelling (lowercase `[a-z0-9_-]`, case-sensitive) and that the peer has a listener daemon running.
+- `send` succeeds but the peer never sees it → verify the lowercase agent-id spelling. IDs use one or two dot-separated `[a-z0-9_-]` segments and are case-sensitive.
 - `watch` always times out → confirm your agent-id matches the one you're actually subscribed as; a listener daemon under the same id would race with you for the message, so either read *or* daemon-bridge, not both against the same retained message.

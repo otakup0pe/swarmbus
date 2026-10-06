@@ -2,6 +2,7 @@ from unittest.mock import patch, AsyncMock
 from click.testing import CliRunner
 import aiomqtt
 from swarmbus.cli import main
+from swarmbus.topics import TopicMap
 
 
 def test_send_inline_body(tmp_path):
@@ -23,6 +24,26 @@ def test_send_inline_body(tmp_path):
     assert call_kwargs["subject"] == "hello"
     assert call_kwargs["body"] == "world"
     assert call_kwargs["reply_to"] is None
+
+
+def test_send_passes_normalized_topic_root():
+    runner = CliRunner()
+    with patch("swarmbus.cli.AgentBus") as mock_bus:
+        mock_bus.return_value.send = AsyncMock()
+        result = runner.invoke(
+            main,
+            [
+                "send",
+                "--agent-id", "sparrow",
+                "--to", "wren",
+                "--subject", "hello",
+                "--body", "world",
+                "--topic-root", " /fleet/ ",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    assert mock_bus.call_args.kwargs["topics"] == TopicMap(root="fleet")
 
 
 def test_send_outbox_flag_passed_through():
@@ -107,6 +128,23 @@ def test_send_outbox_agent_id_with_hyphens_in_env_var():
         )
     assert result.exit_code == 0, result.output
     assert instance.send.call_args.kwargs["outbox_path"] == "/tmp/wren-beta.md"
+
+
+def test_send_outbox_two_level_agent_id_in_env_var():
+    runner = CliRunner()
+    with patch("swarmbus.cli.AgentBus") as MockBus:
+        instance = MockBus.return_value
+        instance.send = AsyncMock()
+        result = runner.invoke(
+            main,
+            ["send", "--agent-id", "team-agent.session-1", "--to", "sparrow",
+             "--subject", "x", "--body", "y"],
+            env={
+                "SWARMBUS_OUTBOX_TEAM_AGENT_SESSION_1": "/tmp/session.md"
+            },
+        )
+    assert result.exit_code == 0, result.output
+    assert instance.send.call_args.kwargs["outbox_path"] == "/tmp/session.md"
 
 
 def test_send_outbox_template_substitution_via_env():
@@ -690,3 +728,16 @@ def test_mcp_server_passes_state_dir():
 
     assert result.exit_code == 0, result.output
     assert run_server.call_args.kwargs["state_dir"] == "/tmp/swarmbus-state"
+
+
+def test_mcp_server_passes_topic_root_from_environment():
+    runner = CliRunner()
+    with patch("swarmbus.mcp_server.run_mcp_server") as run_server:
+        result = runner.invoke(
+            main,
+            ["mcp-server", "--agent-id", "sparrow"],
+            env={"SWARMBUS_TOPIC_ROOT": " /fleet/ "},
+        )
+
+    assert result.exit_code == 0, result.output
+    assert run_server.call_args.kwargs["topic_root"] == "fleet"

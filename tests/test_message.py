@@ -1,7 +1,7 @@
 # tests/test_message.py
 import json
 import pytest
-from swarmbus.message import AgentMessage
+from swarmbus.message import AgentMessage, split_agent_id
 
 def test_create_sets_id_and_ts():
     msg = AgentMessage.create(
@@ -49,6 +49,21 @@ def test_agent_id_spaces_rejected():
 def test_agent_id_valid_chars():
     msg = AgentMessage.create(from_="my-agent_1", to="wren-2", subject="hi", body="x")
     assert msg.from_agent == "my-agent_1"
+
+
+def test_agent_id_accepts_one_optional_topic_separator():
+    msg = AgentMessage.create(
+        from_="team-agent.session_1", to="wren", subject="hi", body="x"
+    )
+    assert msg.from_agent == "team-agent.session_1"
+    assert split_agent_id(msg.from_agent) == ("team-agent", "session_1")
+
+
+@pytest.mark.parametrize("agent_id", [".session", "team-agent.", "team-agent..session"])
+def test_agent_id_rejects_malformed_topic_separator(agent_id):
+    with pytest.raises(Exception):
+        AgentMessage.create(from_=agent_id, to="wren", subject="hi", body="x")
+
 
 def test_body_size_limit():
     big_body = "x" * (64 * 1024 + 1)

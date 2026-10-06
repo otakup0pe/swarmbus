@@ -9,7 +9,11 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-_AGENT_ID_RE = re.compile(r'^[a-z0-9_-]{1,64}$')
+_AGENT_ID_SEGMENT = r"[a-z0-9][a-z0-9_-]*"
+_AGENT_ID_RE = re.compile(
+    rf"^{_AGENT_ID_SEGMENT}(?:\.{_AGENT_ID_SEGMENT})?$"
+)
+_MAX_AGENT_ID_LENGTH = 64
 _MAX_BODY_BYTES = 64 * 1024  # 64KB
 
 # Reserved — these collide with topic semantics and cannot be used as an
@@ -19,17 +23,23 @@ RESERVED_AGENT_IDS = frozenset({"broadcast", "system"})
 
 
 def _validate_agent_id(v: str) -> str:
-    """Validate the wire format of an agent ID. Reserved-word-aware callers
-    should use `_validate_registered_agent_id` instead (enforced by AgentBus)."""
-    if not _AGENT_ID_RE.match(v):
+    """Validate an agent ID with at most one topic-level separator."""
+    if len(v) > _MAX_AGENT_ID_LENGTH or not _AGENT_ID_RE.fullmatch(v):
         raise ValueError(
-            f"Agent ID must match [a-z0-9_-]{{1,64}}, got: {v!r}"
+            "Agent ID must match one or two dot-separated lowercase "
+            "segments using letters, digits, hyphens, or underscores "
+            f"(1-{_MAX_AGENT_ID_LENGTH} chars), got: {v!r}"
         )
     return v
 
 
+def split_agent_id(v: str) -> tuple[str, ...]:
+    """Return the one or two MQTT topic levels for an agent ID."""
+    return tuple(_validate_agent_id(v).split("."))
+
+
 def _validate_registered_agent_id(v: str) -> str:
-    """Format check + reject reserved identifiers. Used by AgentBus.__init__."""
+    """Validate a registered identity and reject topic sentinels."""
     _validate_agent_id(v)
     if v in RESERVED_AGENT_IDS:
         raise ValueError(

@@ -23,6 +23,7 @@ from swarmbus.runtime import (
     TransportUnavailable,
     _ManualAckAdapter,
 )
+from swarmbus.topics import TopicMap
 
 
 class _FakePaho:
@@ -124,6 +125,15 @@ def _message():
         subject="hey",
         body="yo",
     )
+
+
+def test_runtime_uses_injected_topic_map():
+    topics = TopicMap(root="fleet")
+
+    runtime = _runtime(_FakeStore([]), topics=topics)
+
+    assert runtime.topics is topics
+    assert runtime.registry.topics is topics
 
 
 def test_runtime_normalizes_declared_capabilities_at_construction():
@@ -772,7 +782,7 @@ async def test_published_presence_timestamps_only_the_online_record():
 
 @pytest.mark.asyncio
 async def test_runtime_registry_reads_and_updates_use_held_connection():
-    runtime = _runtime(_FakeStore([]), presence=True)
+    runtime = _runtime(_FakeStore([]), durable=True, presence=True)
     runtime._client = _FakeClient()
 
     await runtime._publish_presence("online")
@@ -794,6 +804,28 @@ async def test_runtime_registry_reads_and_updates_use_held_connection():
     ]
     assert listed == [fetched]
     assert fetched["online"] is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_only_advertises_durable_inbox_when_enabled():
+    ephemeral = _runtime(
+        _FakeStore([]),
+        presence=True,
+        capabilities=["durable-inbox"],
+    )
+    durable = _runtime(_FakeStore([]), durable=True, presence=True)
+
+    assert "durable-inbox" not in ephemeral.runtime_capabilities
+    assert "durable-inbox" not in ephemeral.declared_capabilities
+    assert "durable-inbox" in durable.runtime_capabilities
+
+    ephemeral._client = _FakeClient()
+    state = await ephemeral.update_state(
+        status=None,
+        working_set=None,
+        capabilities=["durable-inbox"],
+    )
+    assert "durable-inbox" not in state["capabilities"]
 
 
 @pytest.mark.asyncio
@@ -1130,8 +1162,8 @@ async def test_directory_subscriptions_follow_presence(presence, monkeypatch):
         call.args[0] for call in clients[0].subscribe.await_args_list
     ]
     directory_filters = {
-        runtime.topics.any_presence_filter(),
-        runtime.topics.any_registry_filter(),
+        *runtime.topics.any_presence_filters(),
+        *runtime.topics.any_registry_filters(),
     }
     assert runtime.topics.inbox(runtime.agent_id) in subscribed
     assert runtime.topics.broadcast in subscribed

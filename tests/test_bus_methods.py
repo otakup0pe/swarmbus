@@ -239,6 +239,13 @@ async def test_list_agents_reads_presence_record_shape():
 
 
 @pytest.mark.asyncio
+async def test_list_agents_reads_two_level_agent_id():
+    assert await _listed([
+        _record_presence("team-agent.session-1", "online"),
+    ]) == ["team-agent.session-1"]
+
+
+@pytest.mark.asyncio
 async def test_list_agents_mixes_legacy_and_record_shapes():
     """Both shapes coexist on the presence tree during the transition."""
     assert await _listed([
@@ -258,8 +265,11 @@ async def test_list_agents_trusts_topic_owner_not_payload_claim():
 @pytest.mark.asyncio
 async def test_list_agents_skips_unattributable_presence_topic():
     """Unattributable presence topics do not abort listing."""
+    bad = _record_presence("imposter", "online")
+    bad.topic = "agents/outer/inner/deep/presence"
+
     assert await _listed([
-        _record_presence("imposter", "online", topic_owner="outer/inner"),
+        bad,
         _legacy_presence("sparrow", "online"),
     ]) == ["sparrow"]
 
