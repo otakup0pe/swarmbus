@@ -184,6 +184,51 @@ def create_mcp_app(runtime: _MCPRuntime) -> _MCPApp:
     return app
 
 
+def create_managed_runtime(
+    agent_id: str,
+    broker: str = "localhost",
+    port: int = 1883,
+    *,
+    durable: bool = False,
+    presence: bool = False,
+    lifecycle: Literal["persistent", "transient"] = "persistent",
+    client_id: str | None = None,
+    capabilities: tuple[str, ...] = (),
+    state_dir: str = "~/.local/state/swarmbus",
+    registry_heartbeat_seconds: float = 60,
+    registry_stale_after_seconds: float = 180,
+    topic_root: str = "",
+    username: str | None = None,
+    password: str | None = None,
+    tls: bool = False,
+    ca_cert: str | None = None,
+    client_cert: str | None = None,
+    client_key: str | None = None,
+) -> ManagedMCPRuntime:
+    """Build the runtime shared by direct and daemon-backed MCP modes."""
+    state_path = Path(state_dir).expanduser() / f"{agent_id}.sqlite3"
+    return ManagedMCPRuntime(
+        agent_id=agent_id,
+        broker=broker,
+        port=port,
+        durable=durable,
+        presence=presence,
+        lifecycle=lifecycle,
+        client_id=client_id,
+        heartbeat_seconds=registry_heartbeat_seconds,
+        stale_after_seconds=registry_stale_after_seconds,
+        capabilities=capabilities,
+        state_path=state_path,
+        topics=TopicMap(root=topic_root),
+        username=username,
+        password=password,
+        tls=tls,
+        ca_cert=ca_cert,
+        client_cert=client_cert,
+        client_key=client_key,
+    )
+
+
 def run_mcp_server(
     agent_id: str,
     broker: str = "localhost",
@@ -211,10 +256,7 @@ def run_mcp_server(
             "mcp package not installed. Run: uv pip install 'swarmbus[mcp]'"
         )
 
-    from mcp.server.fastmcp import FastMCP
-
-    state_path = Path(state_dir).expanduser() / f"{agent_id}.sqlite3"
-    runtime = ManagedMCPRuntime(
+    runtime = create_managed_runtime(
         agent_id=agent_id,
         broker=broker,
         port=port,
@@ -222,11 +264,11 @@ def run_mcp_server(
         presence=presence,
         lifecycle=lifecycle,
         client_id=client_id,
-        heartbeat_seconds=registry_heartbeat_seconds,
-        stale_after_seconds=registry_stale_after_seconds,
         capabilities=capabilities,
-        state_path=state_path,
-        topics=TopicMap(root=topic_root),
+        state_dir=state_dir,
+        registry_heartbeat_seconds=registry_heartbeat_seconds,
+        registry_stale_after_seconds=registry_stale_after_seconds,
+        topic_root=topic_root,
         username=username,
         password=password,
         tls=tls,
