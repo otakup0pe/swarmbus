@@ -233,6 +233,7 @@ def create_managed_runtime(
     on_trip: list[str] | None = None,
     trip_listener: str = "mcp-server",
     topics: TopicMap = DEFAULT_TOPICS,
+    topic_address: str | None = None,
 ) -> ManagedMCPRuntime:
     """Build the managed runtime shared by MCP transports."""
     state_path = Path(state_dir).expanduser() / f"{agent_id}.sqlite3"
@@ -259,6 +260,7 @@ def create_managed_runtime(
         on_trip=on_trip,
         trip_listener=trip_listener,
         topics=topics,
+        topic_address=topic_address,
     )
 
 def run_mcp_server(
@@ -284,6 +286,7 @@ def run_mcp_server(
     rate_cooldown: float = DEFAULT_RATE_COOLDOWN,
     on_trip: list[str] | None = None,
     topics: TopicMap = DEFAULT_TOPICS,
+    topic_address: str | None = None,
 ) -> None:
     """Start the MCP sidecar with one managed MQTT connection."""
     if not _MCP_AVAILABLE:
@@ -315,6 +318,7 @@ def run_mcp_server(
         rate_cooldown=rate_cooldown,
         on_trip=on_trip,
         topics=topics,
+        topic_address=topic_address,
     )
 
     @asynccontextmanager

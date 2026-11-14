@@ -261,7 +261,7 @@ def test_list_reads_presence_on_its_root(root, topics):
     result, log = _run(["list", *_root_args(root)])
 
     assert result.exit_code == 0, result.output
-    assert log.subscribed == [topics.any_presence_filter()]
+    assert log.subscribed == list(topics.presence_filters())
 
 
 def test_doctor_roots_both_of_its_probes(tmp_path):
@@ -294,7 +294,7 @@ def test_doctor_roots_both_of_its_probes(tmp_path):
     # 2 would mean doctor gave up before running its checks.
     assert result.exit_code in (0, 1), result.output
     assert [bus.topics for bus in built] == [FLEET, FLEET]
-    assert log.subscribed == [FLEET.any_presence_filter()]
+    assert log.subscribed == list(FLEET.presence_filters())
 
 
 # ---------------------------------------------------------------------------
