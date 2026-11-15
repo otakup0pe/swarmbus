@@ -45,7 +45,7 @@ from .message import (
     frame_body,
     sanitize_field,
 )
-from .topics import TopicMap
+from .topics import TopicMap, live_session_client_id
 from .trip_alert import TripAlerter
 
 
@@ -198,6 +198,29 @@ def _topic_root_option(func):
 def _configured_topics() -> TopicMap:
     """The topic map --topic-root resolved for the running command."""
     return click.get_current_context().meta[_TOPICS_META_KEY]
+
+
+_TOPIC_ADDRESS_META_KEY = "swarmbus.topic_address"
+
+
+def _store_topic_address(ctx, _param, value):
+    ctx.meta[_TOPIC_ADDRESS_META_KEY] = value or None
+
+
+def _configured_topic_address(agent_id: str) -> str | None:
+    """--topic-address for the running command, checked against --agent-id.
+
+    None unless the address has two levels, so that one level is spelled
+    one way wherever it is compared.
+    """
+    address = click.get_current_context().meta[_TOPIC_ADDRESS_META_KEY]
+    if address is None:
+        return None
+    try:
+        live_session_client_id(agent_id, address)
+    except ValueError as exc:
+        raise click.UsageError(f"--topic-address: {exc}") from exc
+    return address if "/" in address else None
 
 
 def _state_db_path(state_dir: str, agent_id: str) -> Path:
@@ -1866,6 +1889,19 @@ def registry_forget(
 def _mcp_runtime_options(func):
     func = _broker_auth_options(func)
     func = _topic_root_option(func)
+    func = click.option(
+        "--topic-address",
+        default=None,
+        envvar="SWARMBUS_TOPIC_ADDRESS",
+        callback=_store_topic_address,
+        expose_value=False,
+        help="Two-level topic address for an agent id of the form a__b, "
+             "written a/b. The agent's topics become agents/a/b/inbox and so "
+             "on, and without --persistent its MQTT client id becomes b, so "
+             "a broker ACL can grant them per session under one login. "
+             "Default: the agent id, at one level. "
+             "[env: SWARMBUS_TOPIC_ADDRESS]",
+    )(func)
     func = _on_trip_option(func)
     func = _rate_limit_options(func)
     func = _hop_limit_option(func)
@@ -2024,6 +2060,7 @@ def mcp_server(
         client_cert=client_cert,
         client_key=client_key,
         topics=_configured_topics(),
+        topic_address=_configured_topic_address(agent_id),
     )
 
 
@@ -2091,6 +2128,7 @@ def mcp_daemon(
             rate_cooldown=rate_cooldown,
             on_trip=shlex.split(on_trip) if on_trip and on_trip.strip() else None,
             topics=_configured_topics(),
+            topic_address=_configured_topic_address(agent_id),
         )
     except LocalRPCOwnershipError as exc:
         raise click.UsageError(str(exc)) from exc
@@ -2132,13 +2170,15 @@ def _mcp_daemon_argv(
     client_cert: str | None,
     client_key: str | None,
     topic_root: str,
+    topic_address: str | None,
 ) -> list[str]:
     """The argv that starts `mcp-daemon` with the same settings as this attach.
 
     Never carries the broker password: it reaches the daemon through its
     environment only. `sys.executable` runs the daemon on this attach's
-    swarmbus version. The topic root is always passed, empty included, so
-    the daemon's own environment or config file cannot give it another one.
+    swarmbus version. The topic root and topic address are always passed,
+    empty included, so the daemon's own environment or config file cannot
+    give it other ones.
     """
     argv = [
         sys.executable, "-c", "from swarmbus.cli import main; main()",
@@ -2158,6 +2198,7 @@ def _mcp_daemon_argv(
         "--rate-cooldown", str(rate_cooldown),
         "--tls" if tls else "--no-tls",
         "--topic-root", topic_root,
+        "--topic-address", topic_address or "",
     ]
     for capability in capabilities:
         argv += ["--capability", capability]
@@ -2240,6 +2281,7 @@ def mcp_attach(
     )
     log_path = state_root / f"{agent_id}.daemon.log"
     topic_root = _configured_topics().root
+    topic_address = _configured_topic_address(agent_id)
     settings = daemon_settings(
         agent_id=agent_id,
         broker=broker,
@@ -2254,6 +2296,7 @@ def mcp_attach(
         presence=presence,
         lifecycle=lifecycle,
         topic_root=topic_root,
+        topic_address=topic_address,
     )
     daemon_argv = _mcp_daemon_argv(
         socket=socket,
@@ -2277,6 +2320,7 @@ def mcp_attach(
         client_cert=client_cert,
         client_key=client_key,
         topic_root=topic_root,
+        topic_address=topic_address,
     )
     env = dict(os.environ)
     env.pop("SWARMBUS_BROKER_PASSWORD", None)
