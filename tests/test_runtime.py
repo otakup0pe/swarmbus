@@ -1931,34 +1931,31 @@ async def test_send_reaches_a_recipient_observed_at_two_levels():
 
 
 @pytest.mark.asyncio
-async def test_send_refuses_an_unobserved_recipient_with_two_possible_addresses():
-    """No directory record can distinguish its one- and two-level inboxes."""
+async def test_send_defaults_an_unobserved_double_underscore_recipient_to_one_level():
     runtime = _runtime(_FakeStore([]), presence=True)
     runtime._client = _FakeClient()
 
-    with pytest.raises(ValueError, match="topic address"):
-        await runtime.send_message(
-            to="flock__wren",
-            subject="hello",
-            body="ping",
-        )
+    await runtime.send_message(
+        to="flock__wren",
+        subject="hello",
+        body="ping",
+    )
 
-    runtime._client.publish.assert_not_awaited()
+    assert runtime._client.publish.await_args.args[0] == "agents/flock__wren/inbox"
 
 
 @pytest.mark.asyncio
-async def test_send_without_presence_refuses_a_recipient_with_two_addresses():
+async def test_send_without_presence_reaches_a_one_level_double_underscore_recipient():
     runtime = _runtime(_FakeStore([]))
     runtime._client = _FakeClient()
 
-    with pytest.raises(ValueError, match="topic address"):
-        await runtime.send_message(
-            to="flock__wren",
-            subject="hello",
-            body="ping",
-        )
+    await runtime.send_message(
+        to="flock__wren",
+        subject="hello",
+        body="ping",
+    )
 
-    runtime._client.publish.assert_not_awaited()
+    assert runtime._client.publish.await_args.args[0] == "agents/flock__wren/inbox"
 
 
 @pytest.mark.asyncio

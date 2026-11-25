@@ -560,8 +560,8 @@ class RegistryCache:
     def topic_address(self, agent_id: str) -> str:
         """Where to reach an agent: its live, freshest observed address.
 
-        An unseen agent falls back to one level. Callers that cannot distinguish
-        an opted-in two-level address must refuse that route.
+        An unseen agent falls back to one level for compatibility with
+        existing ids that contain the namespace separator.
         """
         try:
             return self._preferred_address(agent_id)

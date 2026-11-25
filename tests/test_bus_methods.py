@@ -375,17 +375,18 @@ class _NullPublishClient:
 
 
 @pytest.mark.asyncio
-async def test_send_refuses_an_ambiguous_recipient_without_a_directory():
-    with patch("swarmbus.bus.aiomqtt.Client") as client:
+async def test_send_reaches_a_one_level_double_underscore_recipient():
+    client = _NullPublishClient()
+    client.publish = AsyncMock()
+    with patch("swarmbus.bus.aiomqtt.Client", return_value=client):
         bus = AgentBus(agent_id="sparrow")
-        with pytest.raises(ValueError, match="topic address"):
-            await bus.send(
-                to="flock__wren",
-                subject="hello",
-                body="hi wren",
-            )
+        await bus.send(
+            to="flock__wren",
+            subject="hello",
+            body="hi wren",
+        )
 
-    client.assert_not_called()
+    assert client.publish.await_args.args[0] == "agents/flock__wren/inbox"
 
 
 @pytest.mark.asyncio

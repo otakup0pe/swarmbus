@@ -23,7 +23,7 @@ from .message import AgentMessage, _validate_registered_agent_id, sanitize_field
 from .registry import RegistryRecord, presence_payload
 from .handlers.base import BaseHandler
 from .handlers.file_bridge import FileBridgeHandler
-from .topics import DEFAULT_TOPICS, TopicMap, two_level_topic_address
+from .topics import DEFAULT_TOPICS, TopicMap
 from ._compat import asyncio_timeout
 
 if TYPE_CHECKING:
@@ -570,11 +570,6 @@ class AgentBus:
         """
         if outbox_max_bytes < 0 or outbox_keep < 0:
             raise ValueError("outbox_max_bytes and outbox_keep must be >= 0")
-        if two_level_topic_address(to) is not None:
-            raise ValueError(
-                f"recipient {to!r} has no known topic address; "
-                "use a presence-enabled managed runtime"
-            )
         msg = AgentMessage.create(
             from_=self.agent_id,
             to=to,
